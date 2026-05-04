@@ -1,0 +1,13 @@
+regime,market,n_rows,n_train,n_valid,n_test,out_file
+normal,KR,4901,3426,737,738,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/normal/normal_KR_dataset.csv
+normal,US,4990,3488,751,751,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/normal/normal_US_dataset.csv
+normal,JP,4859,3397,731,731,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/normal/normal_JP_dataset.csv
+dotcom_911,KR,524,327,61,136,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/dotcom_911/dotcom_911_KR_dataset.csv
+dotcom_911,US,531,333,63,135,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/dotcom_911/dotcom_911_US_dataset.csv
+dotcom_911,JP,525,329,63,133,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/dotcom_911/dotcom_911_JP_dataset.csv
+gfc,KR,2310,1589,248,473,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/gfc/gfc_KR_dataset.csv
+gfc,US,2350,1616,251,483,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/gfc/gfc_US_dataset.csv
+gfc,JP,2290,1575,247,468,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/gfc/gfc_JP_dataset.csv
+covid,KR,5149,4656,245,248,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/covid/covid_KR_dataset.csv
+covid,US,5238,4741,249,248,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/covid/covid_US_dataset.csv
+covid,JP,5097,4620,239,238,/content/drive/MyDrive/MyDrive/FINTEL/regime_market_datasets_final/covid/covid_JP_dataset.csv

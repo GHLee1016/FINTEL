@@ -1,0 +1,134 @@
+================================================================================
+  FINTEL — Feature Tier 정의 (3-Tier 누적 구조)
+  적용 대상: ML / DL 모델 전용
+  비적용: 금융모형 (GARCH는 univariate, HAR-RV는 RV_d/RV_w/RV_m 고정)
+================================================================================
+
+  · 누적형(cumulative): 상위 tier는 하위 tier의 모든 feature를 포함
+  · Core → Momentum → Extended 순서로 입력 정보를 단계적으로 확장
+  · 비교 의도:
+      Core → Momentum  : 추세(momentum) 정보 추가의 효과
+      Momentum → Extended : 거시·외생 정보 추가의 효과
+
+
+================================================================================
+  [Tier 1] CORE  (10개)
+================================================================================
+
+  변동성 / 수익률 / 일중 변동성 추정치 + 요일 더미
+
+    RV_d              일별 실현변동성
+    RV_w              주간 실현변동성 (HAR-w)
+    RV_m              월간 실현변동성 (HAR-m)
+    log_return        로그 수익률
+    neg_return        음수 수익률 (downside)
+    semivariance      준분산 (downside risk)
+    parkinson_rv      Parkinson high-low 기반 RV 추정치
+    hl_range          고저 변동폭 (High-Low Range)
+    weekday_sin       요일 sin 인코딩
+    weekday_cos       요일 cos 인코딩
+
+
+================================================================================
+  [Tier 2] MOMENTUM  (14개)
+================================================================================
+
+    RV_d              일별 실현변동성
+    RV_w              주간 실현변동성 (HAR-w)
+    RV_m              월간 실현변동성 (HAR-m)
+    log_return        로그 수익률
+    neg_return        음수 수익률 (downside)
+    semivariance      준분산 (downside risk)
+    parkinson_rv      Parkinson high-low 기반 RV 추정치
+    hl_range          고저 변동폭 (High-Low Range)
+    weekday_sin       요일 sin 인코딩
+    weekday_cos       요일 cos 인코딩
+    momentum_1w       1주 모멘텀
+    momentum_1m       1개월 모멘텀
+    momentum_3m       3개월 모멘텀
+    momentum_6m       6개월 모멘텀
+
+
+================================================================================
+  [Tier 3] EXTENDED  (시장당 28개 = 공통 26 + 시장별 spillover 2)
+================================================================================
+
+  3-A. 공통 부분 (모든 시장 동일, 26개)
+  -----------------------------------------------------------
+
+    RV_d              일별 실현변동성
+    RV_w              주간 실현변동성 (HAR-w)
+    RV_m              월간 실현변동성 (HAR-m)
+    log_return        로그 수익률
+    neg_return        음수 수익률 (downside)
+    semivariance      준분산 (downside risk)
+    parkinson_rv      Parkinson high-low 기반 RV 추정치
+    hl_range          고저 변동폭 (High-Low Range)
+    weekday_sin       요일 sin 인코딩
+    weekday_cos       요일 cos 인코딩
+    momentum_1w       1주 모멘텀
+    momentum_1m       1개월 모멘텀
+    momentum_3m       3개월 모멘텀
+    momentum_6m       6개월 모멘텀
+    fx_level          환율 수준
+    fx_change         환율 변동률
+    rate_3y           3년 국채 금리
+    rate_10y          10년 국채 금리
+    rate_spread       장단기 금리 스프레드
+    policy_rate       정책 금리
+    gold_chg          금 가격 변동률
+    crb_chg           CRB 원자재 지수 변동률
+    wti_chg           WTI 원유 변동률
+    natgas_chg        천연가스 변동률
+    corn_chg          옥수수 변동률
+    epu               경제정책 불확실성 지수 (EPU)
+
+
+  3-B. 시장별 spillover (각 시장에 2개씩 추가, 자기 시장은 제외)
+  -----------------------------------------------------------
+
+    KR  (한국, KOSPI):
+        spillover_SP500     S&P 500 전일 수익률 spillover
+        spillover_Nikkei    Nikkei 225 전일 수익률 spillover
+
+    US  (미국, S&P 500):
+        spillover_KOSPI     KOSPI 전일 수익률 spillover
+        spillover_Nikkei    Nikkei 225 전일 수익률 spillover
+
+    JP  (일본, Nikkei 225):
+        spillover_SP500     S&P 500 전일 수익률 spillover
+        spillover_KOSPI     KOSPI 전일 수익률 spillover
+
+
+================================================================================
+  요약 표
+================================================================================
+
+  Tier        Feature 수            누적 구조
+  ----------  --------------------  ------------------------------------------
+  Core              10              RV/수익률/일중 변동성/요일
+  Momentum          14              Core + 모멘텀 4
+  Extended    28 (시장별 동일 개수)  Momentum + 거시·외생 12 + spillover 2
+
+
+================================================================================
+  비고
+================================================================================
+
+  · 본 tier 분류는 ML/DL 모델의 입력 feature ablation 실험에만 사용.
+  · 동일 모델을 3개 tier로 각각 학습/평가 → tier 간 성능 차이로
+    "정보 추가의 한계 효용"을 측정.
+  · 모델당 결과 행 수: 60 (국가·phase·프로토콜) × 3 tier = 180행.
+
+  · Spillover 변수: 각 시장의 CSV에는 자기 시장을 제외한 다른 두 시장의 spillover
+    컬럼만 들어 있음. 즉 KR에는 SP500/Nikkei, US에는 KOSPI/Nikkei, JP에는 SP500/KOSPI.
+    (자기 시장 spillover는 정의상 의미가 없으므로 자동 제외)
+
+  · Spillover 결측치 처리 (2026-04-29 적용):
+    상대 시장의 휴장일에 spillover 값이 NaN으로 발생하는 경우(예: Nikkei 휴장일에
+    US/KR CSV의 `spillover_Nikkei`)가 있어, 12개 CSV 원본에 **forward-fill** 적용 완료.
+    즉 휴장일은 직전 거래일의 spillover 값으로 대체. 결과적으로 모든 (regime × country)
+    조합에서 EXTENDED tier가 정확히 28개로 통일됨.
+
+  · `select_full_coverage_cols`는 안전장치로 코드에 그대로 유지 (향후 새 변수 추가 시
+    결측 발생 가능성 대비).
