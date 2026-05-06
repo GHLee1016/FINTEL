@@ -9,6 +9,16 @@ from .tuning import (
     DEFAULT_N_TRIALS_TREE,
 )
 
+from dl_trainer import (
+    qlike_loss,
+    train_dl_model,
+    predict_dl,
+    tune_dl_model,
+    run_dl_static,
+    run_dl_expanding,
+)
+
+
 __all__ = [
     # metrics
     "rmse", "mae", "qlike", "rmse_cv", "evaluate",
