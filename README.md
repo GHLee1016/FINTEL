@@ -1,7 +1,8 @@
 # FINTEL
 
 국가별 주가지수 **실현변동성(Realized Volatility, RV)** 예측력을 비교·분석하는 프로젝트입니다.  
-미국(S\&P 500)·한국(KOSPI)·일본(Nikkei 225) 3개 시장을 대상으로, 전통 계량금융 모형부터 머신러닝/딥러닝 및 앙상블까지 **다중 horizon(1일·1주·1개월)** 예측 성능과 **외생적 충격 구간(GFC, COVID, 금리인상기 등)** 에서의 강건성을 체계적으로 평가합니다.
+미국(S&P 500)·한국(KOSPI)·일본(Nikkei 225) 3개 시장을 대상으로, 전통 계량금융 모형부터 머신러닝/딥러닝 및 앙상블까지 
+**다중 horizon(1일·1주·1개월)** 예측 성능과 **외생적 충격 구간(GFC, COVID, 금리인상기 등)** 에서의 강건성을 체계적으로 평가합니다.
 
 > 성균관대학교 데이터사이언스 캡스톤프로젝트 2026 Spring | TEAM FINTEL
 
@@ -9,12 +10,12 @@
 
 ## 1) 프로젝트 개요 (Overview)
 
-- **Target**: 5분 고빈도 수익률 기반 일별 RV (필요 시 range-based estimator 대안 사용)
+- **Target**: 5분 고빈도 수익률 기반 일별 RV
 - **Markets**: US / KR / JP (S\&P 500, KOSPI, Nikkei 225)
 - **Models**
-  - 금융모형(Financial): HAR-RV, GARCH(1,1), EGARCH(1,1)
-  - ML: Elastic Net, XGBoost
-  - DL: MLP, LSTM, CNN(1D), Transformer
+  - 금융모형(Financial): HAR-RV, GARCH(1,1)
+  - ML: Ridge, Elastic Net, Huber, XGBoost, LightGBM
+  - DL: LSTM, CNN(1D), SSM(Mamba),TFT 
   - Ensemble: Stacking, Boosting, Weighted averaging 등
 - **Evaluation**: MSE, MAE, QLIKE + Diebold-Mariano Test, Model Confidence Set
 
@@ -22,8 +23,8 @@
 
 ## 2) 데이터 (Dataset)
 
-- **기간(예정)**: 2000.01 – 2022.06 (약 25년)
-- **출처(예정)**: Oxford-Man (고빈도 기반 RV)
+- **기간**: 2000.01 – 2022.06 (약 23년)
+- **출처**: Oxford-Man (고빈도 기반 RV), 블룸버그 터미널, Fnguide 등
 - **Feature tiers**
   - Core set (10개)
   - Momentum set (14개)
@@ -47,7 +48,7 @@ Project/
 │  ├─ config.py              # SPLITS, PHASES dict (txt 1:1 매핑)
 │  ├─ data_loader.py         # load_dataset / split_train_test / load_split
 │  ├─ models/
-│  │  ├─ __init__.py         # GARCHModel, HARRVModel export
+│  │  ├─ __init__.py         # GARCH Model, HAR-RV Model export
 │  │  ├─ garch.py            # arch_model + 1-step 재귀 예측
 │  │  └─ har_rv.py            # statsmodels OLS HC1
 │  └─ eval/
@@ -56,7 +57,9 @@ Project/
 │     ├─ phases.py           # iter_phases / get_phase_mask
 │     └─ protocols.py        # run_static / run_expanding
 ├─ notebooks/
-│  └─ 01_financial.ipynb     # 그리드 실행 + 시각화
+│  └─ 01_financial.ipynb     # 전통 금융모형 그리드 실행
+│  └─ 02_ml.ipynb            # 머신러닝 모델 그리드 실행
+│  └─ 03_visualize.ipynb     # 시각화
 ├─ results/.gitkeep
 └─ requirements.txt
 ```
