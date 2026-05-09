@@ -8,6 +8,14 @@ from .tuning import (
     DEFAULT_N_TRIALS_LINEAR,
     DEFAULT_N_TRIALS_TREE,
 )
+from .dl_trainer import (
+    qlike_loss,
+    train_dl_model,
+    predict_dl,
+    tune_dl_model,
+    run_dl_static,
+    run_dl_expanding,
+)
 
 __all__ = [
     # metrics
@@ -19,4 +27,7 @@ __all__ = [
     # tuning
     "tune_model", "default_n_trials",
     "DEFAULT_N_TRIALS_LINEAR", "DEFAULT_N_TRIALS_TREE",
+    # dl_trainer
+    "qlike_loss", "train_dl_model", "predict_dl",
+    "tune_dl_model", "run_dl_static", "run_dl_expanding",
 ]
