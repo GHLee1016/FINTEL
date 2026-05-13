@@ -1,2 +1,4 @@
 중간발표/result_visualizations/.matplotlib/
 .claude/
+__pycache__/
+*.pyc
