@@ -296,7 +296,27 @@ def make_best_model_matrix(all_results: pd.DataFrame) -> None:
 
 def make_feature_tier_effect(ml: pd.DataFrame) -> None:
     full = full_test(ml)
-    best_tier = best_by(full, ["country", "regime", "feature_set"])
+
+    # --- Lock protocol per (country, regime) to the one where Core achieves min RMSE_CV.
+    # This isolates the pure tier effect from the protocol effect (apples-to-apples).
+    core = full[full["feature_set"] == "core"].copy()
+    core_winner_idx = core.groupby(["country", "regime"])["RMSE_CV"].idxmin()
+    locked = (
+        core.loc[core_winner_idx, ["country", "regime", "protocol"]]
+            .rename(columns={"protocol": "locked_protocol"})
+    )
+    full_locked = (
+        full.merge(locked, on=["country", "regime"])
+            .query("protocol == locked_protocol")
+            .drop(columns=["locked_protocol"])
+    )
+    locked.to_csv(
+        SUMMARY_DIR / "feature_tier_effect_locked_protocol.csv",
+        index=False, encoding="utf-8-sig",
+    )
+    # ---
+
+    best_tier = best_by(full_locked, ["country", "regime", "feature_set"])
     pivot = best_tier.pivot_table(
         index=["country", "regime"],
         columns="feature_set",
@@ -349,7 +369,7 @@ def make_feature_tier_effect(ml: pd.DataFrame) -> None:
     fig.text(
         0.5,
         -0.02,
-        "Meaning: more variables are useful only when their information matches the market-regime context.",
+        "Each tier is compared under the Core-optimal protocol per (market, regime).",
         ha="center",
         fontsize=11,
         color="#334155",
