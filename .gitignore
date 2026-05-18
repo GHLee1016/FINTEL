@@ -1,0 +1,13 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Claude Code workspace
+.claude/
+
+# matplotlib config (자동 생성)
+중간발표/result_visualizations/.matplotlib/
+
+# DL 데이터셋 (큰 npy 파일들 — notebooks/04_build_dl_dataset.ipynb 재실행으로 생성)
+# README.md, feature_columns_*.txt는 추적 (재현 시 참고용)
+dataset_DL/L*/
