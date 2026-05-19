@@ -1,9 +1,8 @@
 """Group-Structured Neural Network for DL realized-volatility forecasting.
 
-This is the first stable GroupNN baseline: features are split into economic
-groups, each group is encoded by a small MLP after temporal mean pooling, and
-the concatenated group representations are passed to a final prediction head.
-Gating can be layered on after this baseline is validated.
+Features are split into economic groups, each group is encoded by a small MLP
+from mean + last timestep summaries, and a softmax gate learns the relative
+contribution of Core, Momentum, Macro, and Spillover representations.
 """
 
 from __future__ import annotations
@@ -26,10 +25,10 @@ SUPPORTED_ES_METRICS = ("mse", "qlike")
 
 
 class GroupNNNet(nn.Module):
-    """Group-structured MLP baseline.
+    """Gated group-structured MLP.
 
     Input  : (B, L, F)
-    Output : (B,)
+    Output : (B,) or ((B,), (B, n_groups))
     """
 
     def __init__(
@@ -45,7 +44,7 @@ class GroupNNNet(nn.Module):
         self.group_encoders = nn.ModuleDict()
 
         for name, indices in self.feature_groups.items():
-            in_dim = len(indices)
+            in_dim = len(indices) * 2
             self.group_encoders[name] = nn.Sequential(
                 nn.Linear(in_dim, group_hidden),
                 nn.ReLU(),
@@ -54,21 +53,37 @@ class GroupNNNet(nn.Module):
                 nn.ReLU(),
             )
 
+        self.gate = nn.ModuleDict({
+            name: nn.Linear(group_hidden, 1) for name in self.group_names
+        })
         self.head = nn.Sequential(
-            nn.Linear(group_hidden * len(self.group_names), final_hidden),
+            nn.Linear(group_hidden, final_hidden),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(final_hidden, 1),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_gate: bool = False):
         reps = []
+        gate_logits = []
         for name in self.group_names:
             idx = self.feature_groups[name]
-            group_x = x[:, :, idx].mean(dim=1)
-            reps.append(self.group_encoders[name](group_x))
-        z = torch.cat(reps, dim=1)
-        return self.head(z).squeeze(-1)
+            group_x = x[:, :, idx]
+            group_summary = torch.cat(
+                [group_x.mean(dim=1), group_x[:, -1, :]],
+                dim=1,
+            )
+            rep = self.group_encoders[name](group_summary)
+            reps.append(rep)
+            gate_logits.append(self.gate[name](rep))
+
+        rep_stack = torch.stack(reps, dim=1)
+        gate_weights = torch.softmax(torch.cat(gate_logits, dim=1), dim=1)
+        z = torch.sum(rep_stack * gate_weights.unsqueeze(-1), dim=1)
+        out = self.head(z).squeeze(-1)
+        if return_gate:
+            return out, gate_weights
+        return out
 
 
 class GroupNNModel:
@@ -324,19 +339,34 @@ class GroupNNModel:
         inst.epochs_used_ = ckpt.get("epochs_used", 0)
         return inst
 
-    def predict(self, X_test: np.ndarray) -> np.ndarray:
+    def predict(self, X_test: np.ndarray, return_gate: bool = False):
         if self.net_ is None:
             raise RuntimeError("call .fit() first")
         self.net_.eval()
         ds = SequenceDataset(X_test, np.zeros(len(X_test), dtype=np.float32))
         loader = DataLoader(ds, batch_size=self.batch_size, shuffle=False, num_workers=0)
         preds = []
+        gates = []
         with torch.no_grad():
             for x, _ in loader:
-                out = self.net_(x.to(self.device)).cpu().numpy()
-                preds.append(out)
+                if return_gate:
+                    out, gate = self.net_(x.to(self.device), return_gate=True)
+                    gates.append(gate.cpu().numpy())
+                else:
+                    out = self.net_(x.to(self.device))
+                preds.append(out.cpu().numpy())
         y_pred = np.concatenate(preds).astype(np.float32)
-        return np.clip(y_pred, PRED_FLOOR, None)
+        y_pred = np.clip(y_pred, PRED_FLOOR, None)
+        if return_gate:
+            gate_weights = np.concatenate(gates).astype(np.float32)
+            return y_pred, gate_weights
+        return y_pred
+
+    def get_gate_weights(self, X: np.ndarray) -> "pd.DataFrame":
+        import pandas as pd
+
+        _pred, gate_weights = self.predict(X, return_gate=True)
+        return pd.DataFrame(gate_weights, columns=list(self.feature_groups.keys()))
 
     def _set_seed(self) -> None:
         torch.manual_seed(self.seed)
