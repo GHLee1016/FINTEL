@@ -1,13 +1,16 @@
-"""1D-CNN 모델 — PyTorch 기반 Conv1d + AdaptiveAvgPool + 학습 루프 wrapper.
+"""1D-CNN 모델 — PyTorch 기반 WeightNorm(Conv1d) + last timestep + 학습 루프 wrapper.
 
-모델 구조: `nn.Conv1d` 여러 layer + ReLU + Dropout + `AdaptiveAvgPool1d(1)` + Linear(1).
+모델 구조: WeightNorm(`nn.Conv1d`) 여러 layer + ReLU + Dropout + last timestep + Linear(1).
 fit / predict / save_checkpoint / from_checkpoint 인터페이스 제공.
 
 설계 포인트:
 - Input shape: (B, L, F)
 - forward 첫 줄에서 `x.transpose(1, 2)` → (B, F, L) (Conv1d format)
-- 마지막에 `AdaptiveAvgPool1d(1)`로 시퀀스 길이 차원을 1로 축약 → L에 무관하게 작동
-- L별 receptive field 부족은 layer 수/kernel/padding으로 조정 (hp)
+- 마지막 timestep `out[:, :, -1]`을 head로 사용 (LSTM/TCN과 동일).
+  - RV는 lag-1 의존성이 압도적 → AvgPool(전체 평균) 대신 last timestep이 적합.
+- Normalization: 각 Conv1d에 `nn.utils.weight_norm` 적용 (TCN과 동일 패턴).
+  - 시계열 batch 통계 불안정성 회피 (BatchNorm 비추천 도메인).
+- L별 receptive field 부족은 layer 수/kernel로 조정 (hp). 현재 RF = 1 + 2·num_layers (k=3 기준).
 
 학습 설정 (plan에 따라 고정):
 - AdamW (lr=1e-3, weight_decay=1e-5)
@@ -46,14 +49,20 @@ SUPPORTED_ES_METRICS = ("mse", "qlike")
 
 
 class CNN1DNet(nn.Module):
-    """1D-CNN: stacked Conv1d → AdaptiveAvgPool1d(1) → Linear.
+    """1D-CNN: stacked WeightNorm(Conv1d) → last timestep → Linear.
 
     Input  : (B, L, F) FloatTensor
     Output : (B,)      FloatTensor
 
-    각 Conv 블록: Conv1d(kernel=K, padding=K//2) → ReLU → Dropout
+    각 Conv 블록: WeightNorm(Conv1d(kernel=K, padding=K//2)) → ReLU → Dropout
     padding='same' 효과로 시퀀스 길이 L 유지 → L에 무관하게 작동.
-    마지막 AdaptiveAvgPool1d(1)로 시퀀스 차원 평균 풀링 → fixed-length feature.
+    마지막 timestep `out[:, :, -1]`을 head로 사용 (LSTM/TCN과 동일).
+      - RV는 lag-1 의존성이 압도적이라 AvgPool(전체 평균)보다 last가 적합.
+      - AvgPool은 최근 정보를 22~252일 평균에 묻어버려 부적합 (실증적 확인됨).
+
+    Normalization: 각 Conv1d에 `nn.utils.weight_norm` 적용 (TCN과 동일 패턴).
+      - 시계열의 batch 통계 불안정성 회피 (BatchNorm 비추천 도메인).
+      - 작은 dataset (위기 cell L=252는 76 sample)에서 안정 학습.
     """
 
     def __init__(
@@ -71,21 +80,23 @@ class CNN1DNet(nn.Module):
         in_c = n_features
         for _ in range(num_layers):
             layers.append(
-                nn.Conv1d(in_c, hidden_channels, kernel_size=kernel_size, padding=kernel_size // 2)
+                nn.utils.weight_norm(
+                    nn.Conv1d(in_c, hidden_channels, kernel_size=kernel_size,
+                              padding=kernel_size // 2)
+                )
             )
             layers.append(nn.ReLU())
             if dropout > 0:
                 layers.append(nn.Dropout(dropout))
             in_c = hidden_channels
         self.body = nn.Sequential(*layers)
-        self.pool = nn.AdaptiveAvgPool1d(1)
         self.head = nn.Linear(hidden_channels, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, L, F) → Conv1d format (B, F, L)
         x = x.transpose(1, 2).contiguous()
         out = self.body(x)                       # (B, hidden, L)
-        out = self.pool(out).squeeze(-1)         # (B, hidden)
+        out = out[:, :, -1]                      # (B, hidden) — last timestep
         return self.head(out).squeeze(-1)        # (B,)
 
 
