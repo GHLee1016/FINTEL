@@ -1,7 +1,7 @@
 """TCN 모델 — Temporal Convolutional Network (Bai et al., 2018).
 
-LSTMModel/CNN1DModel과 동일 인터페이스 (fit/predict/save_checkpoint/from_checkpoint).
 모델 구조: Dilated causal Conv1d 블록 스택 + residual + 마지막 timestep → Linear(1).
+fit / predict / save_checkpoint / from_checkpoint 인터페이스 제공.
 
 설계 포인트:
 - Causal: padding을 좌측에만 적용 (시퀀스 끝의 trim으로 미래 정보 차단)
@@ -12,7 +12,7 @@ LSTMModel/CNN1DModel과 동일 인터페이스 (fit/predict/save_checkpoint/from
 Receptive field 공식: 1 + 2 × (kernel-1) × Σ dilation
 - num_channels=[64,64,64], kernel=3 → dilations=[1,2,4] → RF = 1 + 2·2·(1+2+4) = 29
 
-학습 설정: LSTM/CNN1D와 동일 (AdamW + ReduceLROnPlateau + early stop QLIKE 등).
+학습 설정: CNN1D와 동일 (AdamW + ReduceLROnPlateau + early stop QLIKE 등).
 
 Usage:
     from src.models.dl import TCNModel
@@ -135,7 +135,8 @@ class TCNNet(nn.Module):
 class TCNModel:
     """TCN 학습/예측 wrapper.
 
-    LSTMModel/CNN1DModel과 동일 인터페이스 + 메서드.
+    fit(X_train, y_train, X_valid, y_valid) / predict(X_test) /
+    history_df() / save_checkpoint() / from_checkpoint() 인터페이스.
     """
 
     name = "TCN"

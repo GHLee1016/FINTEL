@@ -1,15 +1,15 @@
 """1D-CNN 모델 — PyTorch 기반 Conv1d + AdaptiveAvgPool + 학습 루프 wrapper.
 
-LSTMModel과 동일 인터페이스 (fit/predict/save_checkpoint/from_checkpoint).
-모델 구조만 다름: `nn.Conv1d` 여러 layer + ReLU + Dropout + `AdaptiveAvgPool1d(1)` + Linear(1).
+모델 구조: `nn.Conv1d` 여러 layer + ReLU + Dropout + `AdaptiveAvgPool1d(1)` + Linear(1).
+fit / predict / save_checkpoint / from_checkpoint 인터페이스 제공.
 
 설계 포인트:
-- Input shape: (B, L, F) — LSTM과 동일
+- Input shape: (B, L, F)
 - forward 첫 줄에서 `x.transpose(1, 2)` → (B, F, L) (Conv1d format)
 - 마지막에 `AdaptiveAvgPool1d(1)`로 시퀀스 길이 차원을 1로 축약 → L에 무관하게 작동
 - L별 receptive field 부족은 layer 수/kernel/padding으로 조정 (hp)
 
-학습 설정 (plan에 따라 고정, LSTM과 동일):
+학습 설정 (plan에 따라 고정):
 - AdamW (lr=1e-3, weight_decay=1e-5)
 - ReduceLROnPlateau (factor=0.5, patience=5, min_lr=1e-6)
 - MSE loss
@@ -92,7 +92,8 @@ class CNN1DNet(nn.Module):
 class CNN1DModel:
     """1D-CNN 학습/예측 wrapper.
 
-    LSTMModel과 같은 인터페이스. attributes/메서드 모두 동일.
+    fit(X_train, y_train, X_valid, y_valid) / predict(X_test) /
+    history_df() / save_checkpoint() / from_checkpoint() 인터페이스.
     """
 
     name = "1DCNN"
