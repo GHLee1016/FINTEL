@@ -4,6 +4,7 @@ ML 모델(src/models/ml.py)과 분리. 학습 인터페이스는 비슷하지만
 내부는 PyTorch nn.Module + 학습 루프.
 """
 
+from .group_nn import GroupNNModel, GroupNNNet
 from .lstm import LSTMNet, LSTMModel
 
-__all__ = ["LSTMNet", "LSTMModel"]
+__all__ = ["LSTMNet", "LSTMModel", "GroupNNNet", "GroupNNModel"]
