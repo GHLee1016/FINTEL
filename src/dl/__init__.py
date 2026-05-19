@@ -8,9 +8,15 @@ from .scaler import (
     transform_3d,
     fit_transform_splits,
 )
+from .dataset import (
+    load_one,
+    SequenceDataset,
+)
 
 __all__ = [
     "fit_transform_3d",
     "transform_3d",
     "fit_transform_splits",
+    "load_one",
+    "SequenceDataset",
 ]
