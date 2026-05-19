@@ -657,7 +657,7 @@ CELLS = [
         "def plot_one(regime, country, tier, L, protocol='static', refit_step=0, ax=None):",
         "    \"\"\"한 cell의 학습 곡선 (train/valid loss + lr 보조축).\"\"\"",
         "    df = _load_history(protocol)",
-        "    cell = df[(df.regime==regime) & (df.country==country) & (df.tier==tier) &",
+        "    cell = df[(df.regime==regime) & (df.country==country) & (df.feature_set==tier) &",
         "              (df.L==L) & (df.refit_step==refit_step)]",
         "    if cell.empty:",
         "        print(f'no history for {regime}_{country}_{tier}_L{L} (protocol={protocol}, refit_step={refit_step})')",
