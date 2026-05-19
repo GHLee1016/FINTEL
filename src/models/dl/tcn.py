@@ -1,0 +1,451 @@
+"""TCN 모델 — Temporal Convolutional Network (Bai et al., 2018).
+
+LSTMModel/CNN1DModel과 동일 인터페이스 (fit/predict/save_checkpoint/from_checkpoint).
+모델 구조: Dilated causal Conv1d 블록 스택 + residual + 마지막 timestep → Linear(1).
+
+설계 포인트:
+- Causal: padding을 좌측에만 적용 (시퀀스 끝의 trim으로 미래 정보 차단)
+- Dilation: 블록마다 dilation 지수 증가 (1, 2, 4, 8, ...) — receptive field 빠르게 확장
+- Residual: 입력과 출력 channel 다르면 1x1 conv로 매칭
+- forward 출력: 마지막 timestep (causal이라 가장 많은 정보 보유한 위치)
+
+Receptive field 공식: 1 + 2 × (kernel-1) × Σ dilation
+- num_channels=[64,64,64], kernel=3 → dilations=[1,2,4] → RF = 1 + 2·2·(1+2+4) = 29
+
+학습 설정: LSTM/CNN1D와 동일 (AdamW + ReduceLROnPlateau + early stop QLIKE 등).
+
+Usage:
+    from src.models.dl import TCNModel
+    model = TCNModel(
+        feature_cols=feature_cols, L=22,
+        num_channels=[64, 64, 64], kernel_size=3, dropout=0.2,
+    )
+    model.fit(X_train, y_train, X_valid, y_valid)
+    y_pred = model.predict(X_test)
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import List, Optional, Sequence
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
+from ...dl.dataset import SequenceDataset
+from ...eval.metrics import qlike as qlike_fn
+
+
+PRED_FLOOR = 1e-8
+SUPPORTED_ES_METRICS = ("mse", "qlike")
+
+
+class _Chomp1d(nn.Module):
+    """좌측 causal padding으로 늘어난 우측을 잘라 길이 보존."""
+
+    def __init__(self, chomp_size: int):
+        super().__init__()
+        self.chomp_size = chomp_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.chomp_size == 0:
+            return x
+        return x[:, :, : -self.chomp_size].contiguous()
+
+
+class _TemporalBlock(nn.Module):
+    """TCN 표준 블록: 2× (Causal Conv → Chomp → ReLU → Dropout) + residual."""
+
+    def __init__(
+        self,
+        n_inputs: int,
+        n_outputs: int,
+        kernel_size: int,
+        dilation: int,
+        dropout: float,
+    ):
+        super().__init__()
+        padding = (kernel_size - 1) * dilation
+
+        self.conv1 = nn.utils.weight_norm(
+            nn.Conv1d(n_inputs, n_outputs, kernel_size, padding=padding, dilation=dilation)
+        )
+        self.chomp1 = _Chomp1d(padding)
+        self.relu1 = nn.ReLU()
+        self.drop1 = nn.Dropout(dropout)
+
+        self.conv2 = nn.utils.weight_norm(
+            nn.Conv1d(n_outputs, n_outputs, kernel_size, padding=padding, dilation=dilation)
+        )
+        self.chomp2 = _Chomp1d(padding)
+        self.relu2 = nn.ReLU()
+        self.drop2 = nn.Dropout(dropout)
+
+        self.net = nn.Sequential(
+            self.conv1, self.chomp1, self.relu1, self.drop1,
+            self.conv2, self.chomp2, self.relu2, self.drop2,
+        )
+        self.downsample = (
+            nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
+        )
+        self.relu_out = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.net(x)
+        res = x if self.downsample is None else self.downsample(x)
+        return self.relu_out(out + res)
+
+
+class TCNNet(nn.Module):
+    """TCN: 여러 _TemporalBlock + 마지막 timestep → Linear.
+
+    Input  : (B, L, F) FloatTensor
+    Output : (B,)      FloatTensor
+    """
+
+    def __init__(
+        self,
+        n_features: int,
+        num_channels: Sequence[int] = (64, 64, 64),
+        kernel_size: int = 3,
+        dropout: float = 0.2,
+    ):
+        super().__init__()
+        layers: List[nn.Module] = []
+        in_c = n_features
+        for i, out_c in enumerate(num_channels):
+            dilation = 2 ** i
+            layers.append(
+                _TemporalBlock(in_c, out_c, kernel_size, dilation=dilation, dropout=dropout)
+            )
+            in_c = out_c
+        self.body = nn.Sequential(*layers)
+        self.head = nn.Linear(num_channels[-1], 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # (B, L, F) → (B, F, L)
+        x = x.transpose(1, 2).contiguous()
+        out = self.body(x)              # (B, last_channels, L)
+        out = out[:, :, -1]              # 마지막 timestep (causal)
+        return self.head(out).squeeze(-1)   # (B,)
+
+
+class TCNModel:
+    """TCN 학습/예측 wrapper.
+
+    LSTMModel/CNN1DModel과 동일 인터페이스 + 메서드.
+    """
+
+    name = "TCN"
+
+    def __init__(
+        self,
+        feature_cols: List[str],
+        L: int,
+        num_channels: Sequence[int] = (64, 64, 64),
+        kernel_size: int = 3,
+        dropout: float = 0.2,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-5,
+        batch_size: int = 64,
+        max_epochs: int = 100,
+        early_stop_patience: int = 10,
+        early_stop_min_delta: float = 1e-5,
+        early_stop_metric: str = "qlike",
+        lr_patience: int = 5,
+        lr_factor: float = 0.5,
+        lr_min: float = 1e-6,
+        grad_clip: float = 1.0,
+        seed: int = 42,
+        device: Optional[str] = None,
+        verbose: bool = False,
+    ):
+        if early_stop_metric not in SUPPORTED_ES_METRICS:
+            raise ValueError(
+                f"early_stop_metric must be one of {SUPPORTED_ES_METRICS}, got {early_stop_metric!r}"
+            )
+
+        self.feature_cols = list(feature_cols)
+        self.L = L
+        self.num_channels = tuple(num_channels)
+        self.kernel_size = kernel_size
+        self.dropout = dropout
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.batch_size = batch_size
+        self.max_epochs = max_epochs
+        self.early_stop_patience = early_stop_patience
+        self.early_stop_min_delta = early_stop_min_delta
+        self.early_stop_metric = early_stop_metric
+        self.lr_patience = lr_patience
+        self.lr_factor = lr_factor
+        self.lr_min = lr_min
+        self.grad_clip = grad_clip
+        self.seed = seed
+        self.verbose = verbose
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
+
+        # fit 후 채워짐
+        self.net_: Optional[TCNNet] = None
+        self.best_val_loss_: Optional[float] = None
+        self.best_val_mse_: Optional[float] = None
+        self.best_val_qlike_: Optional[float] = None
+        self.best_epoch_: int = 0
+        self.epochs_used_: int = 0
+        self.train_loss_history_: List[float] = []
+        self.valid_loss_history_: List[float] = []
+        self.valid_mse_history_: List[float] = []
+        self.valid_qlike_history_: List[float] = []
+        self.lr_history_: List[float] = []
+
+    # ----------------------------------------------------------------- fit
+    def fit(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_valid: Optional[np.ndarray] = None,
+        y_valid: Optional[np.ndarray] = None,
+    ) -> "TCNModel":
+        self._set_seed()
+
+        n_features = X_train.shape[2]
+        if n_features != len(self.feature_cols):
+            raise ValueError(
+                f"X_train n_features={n_features} != len(feature_cols)={len(self.feature_cols)}"
+            )
+
+        self.net_ = TCNNet(
+            n_features=n_features,
+            num_channels=self.num_channels,
+            kernel_size=self.kernel_size,
+            dropout=self.dropout,
+        ).to(self.device)
+
+        optimizer = torch.optim.AdamW(
+            self.net_.parameters(), lr=self.lr, weight_decay=self.weight_decay
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=self.lr_factor,
+            patience=self.lr_patience, min_lr=self.lr_min,
+        )
+        loss_fn = nn.MSELoss()
+
+        train_loader = DataLoader(
+            SequenceDataset(X_train, y_train),
+            batch_size=self.batch_size, shuffle=False, num_workers=0,
+        )
+        valid_loader = None
+        if X_valid is not None and y_valid is not None and len(X_valid) > 0:
+            valid_loader = DataLoader(
+                SequenceDataset(X_valid, y_valid),
+                batch_size=self.batch_size, shuffle=False, num_workers=0,
+            )
+
+        best_val_metric = float("inf")
+        best_val_mse = float("inf")
+        best_val_qlike = float("inf")
+        best_epoch = 0
+        best_state: Optional[dict] = None
+        patience_counter = 0
+        self.train_loss_history_ = []
+        self.valid_loss_history_ = []
+        self.valid_mse_history_ = []
+        self.valid_qlike_history_ = []
+        self.lr_history_ = []
+
+        for epoch in range(1, self.max_epochs + 1):
+            train_loss = self._train_one_epoch(train_loader, optimizer, loss_fn)
+
+            if valid_loader is not None:
+                val_mse, val_qlike = self._eval_valid(valid_loader, loss_fn)
+            else:
+                val_mse = train_loss
+                val_qlike = train_loss
+
+            target = val_qlike if self.early_stop_metric == "qlike" else val_mse
+            lr_now = optimizer.param_groups[0]["lr"]
+            self.train_loss_history_.append(train_loss)
+            self.valid_loss_history_.append(target)
+            self.valid_mse_history_.append(val_mse)
+            self.valid_qlike_history_.append(val_qlike)
+            self.lr_history_.append(lr_now)
+            scheduler.step(target)
+
+            if target < best_val_metric - self.early_stop_min_delta:
+                best_val_metric = target
+                best_val_mse = val_mse
+                best_val_qlike = val_qlike
+                best_epoch = epoch
+                best_state = copy.deepcopy(self.net_.state_dict())
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+            if self.verbose:
+                print(
+                    f"  epoch {epoch:3d} | train {train_loss:.5f} | "
+                    f"val_mse {val_mse:.5f} | val_qlike {val_qlike:.5f} | "
+                    f"lr {lr_now:.1e} | patience {patience_counter}/{self.early_stop_patience}"
+                )
+
+            if patience_counter >= self.early_stop_patience:
+                break
+
+        self.epochs_used_ = epoch
+        self.best_val_loss_ = best_val_metric
+        self.best_val_mse_ = best_val_mse
+        self.best_val_qlike_ = best_val_qlike
+        self.best_epoch_ = best_epoch
+        if best_state is not None:
+            self.net_.load_state_dict(best_state)
+
+        return self
+
+    # ----------------------------------------------------------------- predict
+    def predict(self, X_test: np.ndarray) -> np.ndarray:
+        if self.net_ is None:
+            raise RuntimeError("call .fit() first")
+        self.net_.eval()
+        ds = SequenceDataset(X_test, np.zeros(len(X_test), dtype=np.float32))
+        loader = DataLoader(ds, batch_size=self.batch_size, shuffle=False, num_workers=0)
+        preds = []
+        with torch.no_grad():
+            for x, _ in loader:
+                x = x.to(self.device)
+                out = self.net_(x).cpu().numpy()
+                preds.append(out)
+        y_pred = np.concatenate(preds).astype(np.float32)
+        return np.clip(y_pred, PRED_FLOOR, None)
+
+    # ----------------------------------------------------------------- helpers
+    def _set_seed(self):
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+        np.random.seed(self.seed)
+
+    def _train_one_epoch(self, loader, optimizer, loss_fn) -> float:
+        self.net_.train()
+        total_loss, total_n = 0.0, 0
+        for x, y in loader:
+            x, y = x.to(self.device), y.to(self.device)
+            optimizer.zero_grad()
+            out = self.net_(x)
+            loss = loss_fn(out, y)
+            loss.backward()
+            if self.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.net_.parameters(), self.grad_clip)
+            optimizer.step()
+            bs = y.size(0)
+            total_loss += loss.item() * bs
+            total_n += bs
+        return total_loss / max(total_n, 1)
+
+    def _eval_loss(self, loader, loss_fn) -> float:
+        self.net_.eval()
+        total_loss, total_n = 0.0, 0
+        with torch.no_grad():
+            for x, y in loader:
+                x, y = x.to(self.device), y.to(self.device)
+                out = self.net_(x)
+                loss = loss_fn(out, y)
+                bs = y.size(0)
+                total_loss += loss.item() * bs
+                total_n += bs
+        return total_loss / max(total_n, 1)
+
+    def _eval_valid(self, loader, loss_fn) -> tuple:
+        self.net_.eval()
+        total_loss, total_n = 0.0, 0
+        y_pred_all = []
+        y_true_all = []
+        with torch.no_grad():
+            for x, y in loader:
+                x_dev, y_dev = x.to(self.device), y.to(self.device)
+                out = self.net_(x_dev)
+                loss = loss_fn(out, y_dev)
+                bs = y_dev.size(0)
+                total_loss += loss.item() * bs
+                total_n += bs
+                y_pred_all.append(out.cpu().numpy())
+                y_true_all.append(y_dev.cpu().numpy())
+        mse_val = total_loss / max(total_n, 1)
+        y_pred = np.clip(np.concatenate(y_pred_all), PRED_FLOOR, None)
+        y_true = np.concatenate(y_true_all)
+        qlike_val = qlike_fn(y_true, y_pred)
+        return mse_val, qlike_val
+
+    # ----------------------------------------------------------------- history
+    def history_df(self) -> "pd.DataFrame":
+        import pandas as pd
+        n = len(self.train_loss_history_)
+        return pd.DataFrame({
+            "epoch": list(range(1, n + 1)),
+            "train_loss": self.train_loss_history_,
+            "valid_loss": self.valid_loss_history_,
+            "valid_mse": self.valid_mse_history_,
+            "valid_qlike": self.valid_qlike_history_,
+            "lr": self.lr_history_,
+        })
+
+    # ----------------------------------------------------------------- checkpoint
+    def save_checkpoint(self, path, extra: Optional[dict] = None) -> None:
+        if self.net_ is None:
+            raise RuntimeError("call .fit() first")
+        ckpt = {
+            "state_dict": self.net_.state_dict(),
+            "best_val_loss": float(self.best_val_loss_) if self.best_val_loss_ is not None else None,
+            "best_val_mse": float(self.best_val_mse_) if self.best_val_mse_ is not None else None,
+            "best_val_qlike": float(self.best_val_qlike_) if self.best_val_qlike_ is not None else None,
+            "best_epoch": int(self.best_epoch_),
+            "epochs_used": int(self.epochs_used_),
+            "feature_cols": list(self.feature_cols),
+            "L": int(self.L),
+            "hp": {
+                "num_channels": list(self.num_channels),
+                "kernel_size": self.kernel_size,
+                "dropout": self.dropout,
+                "lr": self.lr,
+                "weight_decay": self.weight_decay,
+                "batch_size": self.batch_size,
+                "max_epochs": self.max_epochs,
+                "early_stop_patience": self.early_stop_patience,
+                "early_stop_min_delta": self.early_stop_min_delta,
+                "early_stop_metric": self.early_stop_metric,
+                "lr_patience": self.lr_patience,
+                "lr_factor": self.lr_factor,
+                "lr_min": self.lr_min,
+                "grad_clip": self.grad_clip,
+                "seed": self.seed,
+            },
+        }
+        if extra:
+            ckpt.update(extra)
+        torch.save(ckpt, path)
+
+    @classmethod
+    def from_checkpoint(cls, path, device: Optional[str] = None) -> "TCNModel":
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+        hp = ckpt["hp"]
+        inst = cls(feature_cols=ckpt["feature_cols"], L=ckpt["L"], device=device, **hp)
+        inst.net_ = TCNNet(
+            n_features=len(ckpt["feature_cols"]),
+            num_channels=inst.num_channels,
+            kernel_size=inst.kernel_size,
+            dropout=inst.dropout,
+        ).to(inst.device)
+        inst.net_.load_state_dict(ckpt["state_dict"])
+        inst.net_.eval()
+        inst.best_val_loss_ = ckpt.get("best_val_loss")
+        inst.best_val_mse_ = ckpt.get("best_val_mse")
+        inst.best_val_qlike_ = ckpt.get("best_val_qlike")
+        inst.best_epoch_ = ckpt.get("best_epoch", 0)
+        inst.epochs_used_ = ckpt.get("epochs_used", 0)
+        return inst
