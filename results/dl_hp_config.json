@@ -1,0 +1,30 @@
+{
+  "LS": [
+    22,
+    60,
+    252
+  ],
+  "TIERS": [
+    "core",
+    "momentum",
+    "extended"
+  ],
+  "HP": {
+    "hidden_channels": 64,
+    "num_layers": 6,
+    "kernel_size": 3,
+    "dropout": 0.2,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "batch_size": 64,
+    "max_epochs": 100,
+    "early_stop_patience": 10,
+    "early_stop_min_delta": 1e-05,
+    "early_stop_metric": "qlike",
+    "lr_patience": 5,
+    "lr_factor": 0.5,
+    "lr_min": 1e-06,
+    "grad_clip": 1.0,
+    "seed": 42
+  }
+}
