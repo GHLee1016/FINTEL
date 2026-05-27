@@ -34,6 +34,7 @@ LOG_COLUMNS = ["date", "feature_set", "L", "protocol", "RV_target", "RV_pred"]
 CELL_COLUMNS = ["regime", "country", "feature_set", "protocol"]
 DATE_KEY_COLUMNS = CELL_COLUMNS + ["date"]
 TARGET_TOLERANCE = 1e-6
+PREDICTION_TOLERANCE = 1e-10
 
 
 def _raw_log_url(repo: str, branch: str, path: str) -> str:
@@ -71,7 +72,34 @@ def collect_prediction_master(repo: str = "GHLee1016/FINTEL") -> pd.DataFrame:
     master["date"] = pd.to_datetime(master["date"])
     master["RV_pred"] = np.clip(master["RV_pred"].astype(float), 1e-12, None)
     master["RV_target"] = master["RV_target"].astype(float)
+    master = _drop_duplicate_predictions(master)
     return master.sort_values(["model", *DATE_KEY_COLUMNS]).reset_index(drop=True)
+
+
+def _drop_duplicate_predictions(master: pd.DataFrame) -> pd.DataFrame:
+    """Remove duplicate appended log rows while guarding against conflicting values."""
+    key_cols = ["model", *DATE_KEY_COLUMNS]
+    duplicate_mask = master.duplicated(key_cols, keep=False)
+    if not duplicate_mask.any():
+        return master
+
+    duplicated = master.loc[duplicate_mask].copy()
+    conflicts = []
+    for key, group in duplicated.groupby(key_cols, sort=False):
+        if group["L"].nunique() != 1:
+            conflicts.append(key)
+            continue
+        if group["RV_target"].max() - group["RV_target"].min() > TARGET_TOLERANCE:
+            conflicts.append(key)
+            continue
+        if group["RV_pred"].max() - group["RV_pred"].min() > PREDICTION_TOLERANCE:
+            conflicts.append(key)
+
+    if conflicts:
+        sample = pd.DataFrame(conflicts[:5], columns=key_cols)
+        raise ValueError(f"Conflicting duplicate predictions found:\n{sample}")
+
+    return master.drop_duplicates(key_cols, keep="last").reset_index(drop=True)
 
 
 def coverage_table(master: pd.DataFrame) -> pd.DataFrame:
