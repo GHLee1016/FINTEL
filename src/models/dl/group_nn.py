@@ -1,8 +1,15 @@
 """Group-Structured Neural Network for DL realized-volatility forecasting.
 
-Features are split into economic groups, each group is encoded by a small MLP
-from mean + last timestep summaries, and a softmax gate learns the relative
-contribution of Core, Momentum, Macro, and Spillover representations.
+Features are split into economic groups (Core / Momentum / Macro / Spillover).
+Each group is encoded by a small MLP from temporal summary statistics
+(configurable via ``summary_type``), and the four group representations are
+**concatenated** into a single vector passed through a final MLP head.
+
+Group importance for economic interpretation is derived from the L2 norm of
+each group's trained representation (``predict(return_gate=True)`` /
+``get_gate_weights()``).  Since the reps are trained through the main loss,
+their norms reflect how strongly each group activated the network — unlike a
+separate gate linear layer whose weights would receive zero gradients.
 """
 
 from __future__ import annotations
@@ -23,67 +30,194 @@ from .group_utils import build_feature_groups
 PRED_FLOOR = 1e-8
 SUPPORTED_ES_METRICS = ("mse", "qlike")
 
+# Temporal summary options
+# "mean_last"     : [mean, last]                          n_stats=2  (original)
+# "mean_std_last" : [mean, std, last]                     n_stats=3  (volatility clustering)
+# "har"           : [monthly_mean, weekly_mean, daily]    n_stats=3  (HAR-style multi-scale)
+# "har_std"       : [monthly_mean, weekly_mean, daily, std] n_stats=4 (HAR + clustering)
+SUMMARY_TYPES = ("mean_last", "mean_std_last", "har", "har_std")
+SUMMARY_N_STATS = {"mean_last": 2, "mean_std_last": 3, "har": 3, "har_std": 4}
+
+
+class QLikeLoss(nn.Module):
+    """QLIKE loss for training.
+
+    QLIKE(y, ŷ) = mean(y/ŷ - log(y/ŷ) - 1)
+
+    Directly optimises the evaluation metric used by all models in this
+    project (ML Optuna objective, DL early-stop metric).  Gradient:
+        d/dŷ = (ŷ - y) / ŷ²
+    which is well-behaved as long as ŷ > 0 (enforced by ``floor``).
+
+    Parameters
+    ----------
+    floor : float
+        Minimum predicted value; prevents log(0) / division by zero.
+    """
+
+    def __init__(self, floor: float = PRED_FLOOR):
+        super().__init__()
+        self.floor = floor
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pred = pred.clamp(min=self.floor)
+        ratio = target / pred
+        return (ratio - torch.log(ratio) - 1.0).mean()
+
+
+def _make_encoder(
+    in_dim: int,
+    hidden: int,
+    dropout: float,
+    use_layer_norm: bool,
+) -> nn.Sequential:
+    """Two-layer MLP encoder with optional LayerNorm (pre-activation)."""
+    layers: list = [nn.Linear(in_dim, hidden)]
+    if use_layer_norm:
+        layers.append(nn.LayerNorm(hidden))
+    layers += [nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, hidden)]
+    if use_layer_norm:
+        layers.append(nn.LayerNorm(hidden))
+    layers.append(nn.ReLU())
+    return nn.Sequential(*layers)
+
+
+def _make_head(
+    in_dim: int,
+    hidden: int,
+    dropout: float,
+    use_layer_norm: bool,
+) -> nn.Sequential:
+    """Final prediction head with optional LayerNorm."""
+    layers: list = [nn.Linear(in_dim, hidden)]
+    if use_layer_norm:
+        layers.append(nn.LayerNorm(hidden))
+    layers += [nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, 1)]
+    return nn.Sequential(*layers)
+
 
 class GroupNNNet(nn.Module):
-    """Gated group-structured MLP.
+    """Group-structured MLP with optional LayerNorm and cross-group attention.
 
     Input  : (B, L, F)
     Output : (B,) or ((B,), (B, n_groups))
+
+    Options
+    -------
+    use_layer_norm : bool
+        Insert LayerNorm after each Linear layer in group encoders and head.
+    use_cross_attn : bool
+        After individual group encoding, apply a single multi-head self-attention
+        layer across the n_groups representations (with residual connection).
+        Allows groups to interact before the final head.
+    n_heads : int
+        Number of attention heads (only used when use_cross_attn=True).
+        Must divide group_hidden evenly.
     """
 
     def __init__(
         self,
         feature_groups: Dict[str, List[int]],
-        group_hidden: int = 32,
+        group_hidden: int = 64,
         final_hidden: int = 64,
         dropout: float = 0.2,
+        summary_type: str = "mean_std_last",
+        use_layer_norm: bool = False,
+        use_cross_attn: bool = False,
+        n_heads: int = 4,
     ):
+        if summary_type not in SUMMARY_TYPES:
+            raise ValueError(f"summary_type must be one of {SUMMARY_TYPES}, got {summary_type!r}")
+        if use_cross_attn and group_hidden % n_heads != 0:
+            raise ValueError(
+                f"group_hidden ({group_hidden}) must be divisible by n_heads ({n_heads})"
+            )
         super().__init__()
         self.feature_groups = {k: list(v) for k, v in feature_groups.items()}
         self.group_names = list(self.feature_groups.keys())
-        self.group_encoders = nn.ModuleDict()
+        self.summary_type = summary_type
+        self.use_layer_norm = use_layer_norm
+        self.use_cross_attn = use_cross_attn
+        n_groups = len(self.group_names)
 
+        # ── Per-group encoders ───────────────────────────────────────────────
+        n_stats = SUMMARY_N_STATS[summary_type]
+        self.group_encoders = nn.ModuleDict()
         for name, indices in self.feature_groups.items():
-            in_dim = len(indices) * 2
-            self.group_encoders[name] = nn.Sequential(
-                nn.Linear(in_dim, group_hidden),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(group_hidden, group_hidden),
-                nn.ReLU(),
+            in_dim = len(indices) * n_stats
+            self.group_encoders[name] = _make_encoder(
+                in_dim, group_hidden, dropout, use_layer_norm
             )
 
-        self.gate = nn.ModuleDict({
-            name: nn.Linear(group_hidden, 1) for name in self.group_names
-        })
-        self.head = nn.Sequential(
-            nn.Linear(group_hidden, final_hidden),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(final_hidden, 1),
+        # ── Cross-group attention (optional) ────────────────────────────────
+        # Self-attention over (B, n_groups, group_hidden) with residual.
+        # Pre-norm applied when use_layer_norm=True.
+        if use_cross_attn:
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=group_hidden, num_heads=n_heads,
+                dropout=dropout, batch_first=True,
+            )
+            if use_layer_norm:
+                self.cross_attn_ln = nn.LayerNorm(group_hidden)
+
+        # ── Prediction head ──────────────────────────────────────────────────
+        # Input dim = group_hidden * n_groups  (e.g. 64 * 4 = 256)
+        self.head = _make_head(
+            group_hidden * n_groups, final_hidden, dropout, use_layer_norm
         )
 
     def forward(self, x: torch.Tensor, return_gate: bool = False):
         reps = []
-        gate_logits = []
+        L = x.shape[1]
         for name in self.group_names:
             idx = self.feature_groups[name]
-            group_x = x[:, :, idx]
+            group_x = x[:, :, idx]                              # (B, L, G_g)
             group_summary = torch.cat(
-                [group_x.mean(dim=1), group_x[:, -1, :]],
-                dim=1,
-            )
-            rep = self.group_encoders[name](group_summary)
+                self._summarise(group_x, L), dim=1
+            )                                                    # (B, n_stats*G_g)
+            rep = self.group_encoders[name](group_summary)      # (B, group_hidden)
             reps.append(rep)
-            gate_logits.append(self.gate[name](rep))
 
-        rep_stack = torch.stack(reps, dim=1)
-        gate_weights = torch.softmax(torch.cat(gate_logits, dim=1), dim=1)
-        z = torch.sum(rep_stack * gate_weights.unsqueeze(-1), dim=1)
-        out = self.head(z).squeeze(-1)
+        # ── Cross-group interaction (optional) ───────────────────────────────
+        if self.use_cross_attn:
+            stacked = torch.stack(reps, dim=1)                  # (B, n_groups, H)
+            attn_in = self.cross_attn_ln(stacked) if self.use_layer_norm else stacked
+            attended, _ = self.cross_attn(attn_in, attn_in, attn_in)
+            stacked = stacked + attended                         # residual
+            reps = [stacked[:, i, :] for i in range(len(self.group_names))]
+
+        # ── Prediction head ──────────────────────────────────────────────────
+        z = torch.cat(reps, dim=1)                              # (B, group_hidden*n_groups)
+        out = self.head(z).squeeze(-1)                          # (B,)
+
         if return_gate:
-            return out, gate_weights
+            # Group importance: normalised L2 norm of each trained rep.
+            norms = torch.stack(
+                [rep.norm(dim=1) for rep in reps], dim=1       # (B, n_groups)
+            )
+            importance = norms / norms.sum(dim=1, keepdim=True) # (B, n_groups)
+            return out, importance
         return out
+
+    def _summarise(self, g: torch.Tensor, L: int) -> list:
+        """Return temporal summary statistics for one group tensor (B, L, G_g)."""
+        st = self.summary_type
+        if st == "mean_last":
+            return [g.mean(dim=1), g[:, -1, :]]
+        elif st == "mean_std_last":
+            return [g.mean(dim=1), g.std(dim=1, unbiased=False), g[:, -1, :]]
+        elif st == "har":
+            # HAR-style: monthly → weekly → daily (slow to fast)
+            m = g[:, -min(22, L):, :].mean(dim=1)
+            w = g[:, -min(5,  L):, :].mean(dim=1)
+            d = g[:, -1, :]
+            return [m, w, d]
+        else:  # "har_std"
+            m = g[:, -min(22, L):, :].mean(dim=1)
+            w = g[:, -min(5,  L):, :].mean(dim=1)
+            d = g[:, -1, :]
+            s = g.std(dim=1, unbiased=False)
+            return [m, w, d, s]
 
 
 class GroupNNModel:
@@ -95,7 +229,7 @@ class GroupNNModel:
         self,
         feature_cols: List[str],
         L: int,
-        group_hidden: int = 32,
+        group_hidden: int = 64,
         final_hidden: int = 64,
         dropout: float = 0.2,
         lr: float = 1e-3,
@@ -110,12 +244,21 @@ class GroupNNModel:
         lr_min: float = 1e-6,
         grad_clip: float = 1.0,
         seed: int = 42,
+        use_qlike_loss: bool = False,
+        summary_type: str = "mean_std_last",
+        use_layer_norm: bool = False,
+        use_cross_attn: bool = False,
+        n_heads: int = 4,
         device: Optional[str] = None,
         verbose: bool = False,
     ):
         if early_stop_metric not in SUPPORTED_ES_METRICS:
             raise ValueError(
                 f"early_stop_metric must be one of {SUPPORTED_ES_METRICS}, got {early_stop_metric!r}"
+            )
+        if summary_type not in SUMMARY_TYPES:
+            raise ValueError(
+                f"summary_type must be one of {SUMMARY_TYPES}, got {summary_type!r}"
             )
 
         self.feature_cols = list(feature_cols)
@@ -136,6 +279,11 @@ class GroupNNModel:
         self.lr_min = lr_min
         self.grad_clip = grad_clip
         self.seed = seed
+        self.use_qlike_loss = use_qlike_loss
+        self.summary_type = summary_type
+        self.use_layer_norm = use_layer_norm
+        self.use_cross_attn = use_cross_attn
+        self.n_heads = n_heads
         self.verbose = verbose
 
         if device is None:
@@ -174,6 +322,10 @@ class GroupNNModel:
             group_hidden=self.group_hidden,
             final_hidden=self.final_hidden,
             dropout=self.dropout,
+            summary_type=self.summary_type,
+            use_layer_norm=self.use_layer_norm,
+            use_cross_attn=self.use_cross_attn,
+            n_heads=self.n_heads,
         ).to(self.device)
 
         optimizer = torch.optim.AdamW(
@@ -186,7 +338,7 @@ class GroupNNModel:
             patience=self.lr_patience,
             min_lr=self.lr_min,
         )
-        loss_fn = nn.MSELoss()
+        loss_fn = QLikeLoss() if self.use_qlike_loss else nn.MSELoss()
 
         train_loader = DataLoader(
             SequenceDataset(X_train, y_train),
@@ -245,8 +397,9 @@ class GroupNNModel:
                 patience_counter += 1
 
             if self.verbose:
+                loss_label = "train_qlike" if self.use_qlike_loss else "train_mse"
                 print(
-                    f"  epoch {epoch:3d} | train {train_loss:.5f} | "
+                    f"  epoch {epoch:3d} | {loss_label} {train_loss:.5f} | "
                     f"val_mse {val_mse:.5f} | val_qlike {val_qlike:.5f} | "
                     f"lr {lr_now:.1e} | patience {patience_counter}/{self.early_stop_patience}"
                 )
@@ -306,6 +459,11 @@ class GroupNNModel:
                 "lr_min": self.lr_min,
                 "grad_clip": self.grad_clip,
                 "seed": self.seed,
+                "use_qlike_loss": self.use_qlike_loss,
+                "summary_type": self.summary_type,
+                "use_layer_norm": self.use_layer_norm,
+                "use_cross_attn": self.use_cross_attn,
+                "n_heads": self.n_heads,
             },
         }
         if extra:
@@ -318,6 +476,10 @@ class GroupNNModel:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         ckpt = torch.load(path, map_location=device, weights_only=False)
         hp = ckpt["hp"]
+        # Backward-compat: older checkpoints lack these keys → default False/4
+        hp.setdefault("use_layer_norm", False)
+        hp.setdefault("use_cross_attn", False)
+        hp.setdefault("n_heads", 4)
         inst = cls(
             feature_cols=ckpt["feature_cols"],
             L=ckpt["L"],
@@ -329,6 +491,10 @@ class GroupNNModel:
             group_hidden=inst.group_hidden,
             final_hidden=inst.final_hidden,
             dropout=inst.dropout,
+            summary_type=inst.summary_type,
+            use_layer_norm=inst.use_layer_norm,
+            use_cross_attn=inst.use_cross_attn,
+            n_heads=inst.n_heads,
         ).to(inst.device)
         inst.net_.load_state_dict(ckpt["state_dict"])
         inst.net_.eval()
