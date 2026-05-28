@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch
+from matplotlib.patches import FancyBboxPatch, Patch
 
 
 FIGURE_DPI = 220
@@ -26,10 +26,10 @@ MODEL_COLORS = {
     "TCN": "#10B981",
 }
 MODEL_ROLES = {
-    "LSTM": "Persistence\nsequential memory",
-    "TST": "Global attention\nimportant dates",
-    "1DCNN": "Local shocks\nshort windows",
-    "TCN": "Long-lag patterns\ndilated history",
+    "LSTM": "persistence",
+    "TST": "global attention",
+    "1DCNN": "local shocks",
+    "TCN": "long lags",
 }
 
 BLUE = "#2563EB"
@@ -145,128 +145,129 @@ def plot_qlike_winner_map(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> 
     return _save(fig, output_dir, "01_single_dl_winner_map_qlike.png")
 
 
-def plot_regime_winner_distribution(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
-    """Figure 2: QLIKE best single DL composition by market regime."""
+def plot_regime_rank_profile(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
+    """Figure 2: average QLIKE rank profile by market regime."""
     _set_style()
-    best = _best_by_metric(full, "QLIKE")
     regime_order = ["normal", "911", "gfc", "covid"]
-    counts = pd.crosstab(best["regime"], best["model"]).reindex(regime_order).reindex(columns=MODELS, fill_value=0)
 
-    fig, ax = plt.subplots(figsize=(10.8, 5.8))
-    bottom = np.zeros(len(counts))
-    x = np.arange(len(counts))
-    for model in MODELS:
-        values = counts[model].to_numpy()
-        bars = ax.bar(x, values, bottom=bottom, label=model, color=MODEL_COLORS[model], width=0.64)
-        for i, (bar, value) in enumerate(zip(bars, values)):
-            if value > 0:
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bottom[i] + value / 2,
-                    str(int(value)),
-                    ha="center",
-                    va="center",
-                    color="white",
-                    fontweight="bold",
-                    fontsize=11,
-                )
-        bottom += values
+    ranked = full.copy()
+    ranked["qlike_rank"] = ranked.groupby(
+        ["regime", "country", "feature_set", "protocol"], observed=False
+    )["QLIKE"].rank(method="min", ascending=True)
+    profile = (
+        ranked.groupby(["regime", "model"], observed=False)["qlike_rank"]
+        .mean()
+        .unstack("model")
+        .reindex(regime_order)
+        .reindex(columns=MODELS)
+    )
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(regime_order, fontweight="bold")
-    ax.set_ylim(0, 18.8)
-    ax.set_ylabel("Number of QLIKE-best cells")
+    fig, ax = plt.subplots(figsize=(8.8, 5.4))
+    image = ax.imshow(profile.to_numpy(), cmap="RdYlGn_r", vmin=1, vmax=4, aspect="auto")
+
+    ax.set_xticks(np.arange(len(MODELS)))
+    ax.set_xticklabels(MODELS, fontweight="bold")
+    ax.set_yticks(np.arange(len(regime_order)))
+    ax.set_yticklabels(regime_order, fontweight="bold")
+    ax.set_xlabel("DL architecture")
+    ax.set_ylabel("Market regime")
     fig.suptitle(
-        "Different Market Regimes Favor Different DL Structures",
-        x=0.12,
+        "Model Ranking Changes With Market Regime",
+        x=0.1,
         y=0.98,
         ha="left",
         fontsize=16,
         fontweight="bold",
     )
     fig.text(
-        0.12,
+        0.1,
         0.91,
-        "Each regime has 18 cells. Normal favors LSTM; 911 favors TST; GFC shows more local-shock diversity.",
+        "Average QLIKE rank within identical country-tier-protocol cells. 1.0 is best; 4.0 is worst.",
         color=GRAY,
         fontsize=10,
     )
-    ax.grid(axis="y", color=LIGHT_GRID)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(title="Best single DL", bbox_to_anchor=(1.01, 1), loc="upper left")
-    fig.tight_layout(rect=(0, 0, 0.86, 0.86))
-    return _save(fig, output_dir, "02_regime_winner_distribution_qlike.png")
+
+    for i, regime in enumerate(regime_order):
+        for j, model in enumerate(MODELS):
+            value = profile.loc[regime, model]
+            ax.text(j, i, f"{value:.1f}", ha="center", va="center", fontsize=12, fontweight="bold", color=DARK)
+
+    ax.tick_params(length=0)
+    ax.spines[:].set_visible(False)
+    cbar = fig.colorbar(image, ax=ax, fraction=0.035, pad=0.035)
+    cbar.set_label("Average rank")
+    cbar.set_ticks([1, 2, 3, 4])
+    fig.tight_layout(rect=(0, 0, 0.98, 0.86))
+    return _save(fig, output_dir, "02_regime_model_rank_profile.png")
 
 
-def plot_model_role_summary(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
-    """Figure 3: connect model structure hypotheses with QLIKE winner counts."""
+def plot_dl_to_ensemble_bridge(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
+    """Figure 3: compact slide bridge from single-DL results to ensemble."""
     _set_style()
     best_qlike = _best_by_metric(full, "QLIKE")
-    counts = pd.DataFrame(
-        {
-            "QLIKE wins": best_qlike["model"].value_counts().reindex(MODELS, fill_value=0),
-            "Median QLIKE": full.groupby("model", observed=False)["QLIKE"].median().reindex(MODELS),
-        }
-    )
+    counts = best_qlike["model"].value_counts().reindex(MODELS, fill_value=0)
+    top_two = counts.sort_values(ascending=False).head(2)
 
-    fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.8), gridspec_kw={"width_ratios": [1.1, 1.2]})
-
-    axes[0].axis("off")
-    axes[0].set_xlim(0, 1)
-    axes[0].set_ylim(0, 1)
-    axes[0].set_title("Model structures imply different strengths", loc="left", pad=12)
-    y_positions = np.linspace(0.82, 0.18, len(MODELS))
-    for y, model in zip(y_positions, MODELS):
-        axes[0].scatter(0.14, y, s=360, color=MODEL_COLORS[model], edgecolor="white", linewidth=1.5)
-        axes[0].text(0.24, y + 0.045, model, ha="left", va="center", fontweight="bold", fontsize=12, color=DARK)
-        axes[0].text(0.24, y - 0.035, MODEL_ROLES[model], ha="left", va="center", fontsize=10.5, color=DARK)
-    axes[0].text(
-        0.02,
-        0.02,
-        "Interpretation: if models specialize in different temporal patterns,\n"
-        "the best single model should vary across metrics and market conditions.",
-        ha="left",
-        va="bottom",
-        fontsize=9.5,
-        color=GRAY,
-    )
-
-    x = np.arange(len(MODELS))
-    bars1 = axes[1].bar(x, counts["QLIKE wins"], color=[MODEL_COLORS[m] for m in MODELS], width=0.62)
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(MODELS, fontweight="bold")
-    axes[1].set_ylabel("QLIKE-best count out of 72 cells")
-    axes[1].set_title("Empirical QLIKE winners are distributed", loc="left", pad=12)
-    axes[1].grid(axis="y", color=LIGHT_GRID)
-    axes[1].spines[["top", "right"]].set_visible(False)
-    for bar in bars1:
-        axes[1].text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.8,
-            f"{int(bar.get_height())}",
-            ha="center",
-            va="bottom",
-            fontweight="bold",
-            fontsize=10,
-        )
+    fig, ax = plt.subplots(figsize=(10.0, 4.2))
+    ax.axis("off")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
 
     fig.suptitle(
-        "Single-DL Results Motivate an Ensemble Rather Than One Fixed Winner",
-        x=0.02,
-        y=0.98,
+        "From Single-DL Instability to Ensemble",
+        x=0.05,
+        y=0.96,
         ha="left",
         fontsize=16,
         fontweight="bold",
     )
-    fig.text(
-        0.02,
-        0.915,
-        "Different architectures win under different market conditions, supporting the complementarity hypothesis.",
-        color=GRAY,
-        fontsize=10,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.88))
-    return _save(fig, output_dir, "03_model_role_summary.png")
+
+    cards = [
+        (
+            0.04,
+            "Observed",
+            f"QLIKE winners split\nLSTM {counts['LSTM']} | TST {counts['TST']}\n1DCNN {counts['1DCNN']} | TCN {counts['TCN']}",
+            BLUE,
+        ),
+        (
+            0.37,
+            "Why",
+            "Each architecture sees\na different time pattern\n"
+            f"{top_two.index[0]} and {top_two.index[1]} lead,\nbut not everywhere",
+            "#7C3AED",
+        ),
+        (
+            0.70,
+            "Next",
+            "Equal-weight ensemble\nreduces dependence on\none fragile model choice",
+            GREEN,
+        ),
+    ]
+
+    for x0, label, body, color in cards:
+        box = FancyBboxPatch(
+            (x0, 0.18),
+            0.26,
+            0.58,
+            boxstyle="round,pad=0.018,rounding_size=0.025",
+            linewidth=1.2,
+            edgecolor="#CBD5E1",
+            facecolor="#FFFFFF",
+        )
+        ax.add_patch(box)
+        ax.text(x0 + 0.03, 0.67, label, ha="left", va="center", color=color, fontsize=13, fontweight="bold")
+        ax.text(x0 + 0.03, 0.47, body, ha="left", va="center", color=DARK, fontsize=11.5, linespacing=1.35)
+
+    for x0 in [0.32, 0.65]:
+        ax.annotate(
+            "",
+            xy=(x0 + 0.03, 0.48),
+            xytext=(x0 - 0.03, 0.48),
+            arrowprops=dict(arrowstyle="->", color=GRAY, lw=1.6),
+        )
+
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
+    return _save(fig, output_dir, "03_dl_to_ensemble_bridge.png")
 
 
 def make_all_dl_master_figures(project_root: str | Path = ".", output_dir: str | Path | None = None) -> list[Path]:
@@ -276,8 +277,8 @@ def make_all_dl_master_figures(project_root: str | Path = ".", output_dir: str |
     full = load_dl_master(root)
     paths = [
         plot_qlike_winner_map(full, out_dir),
-        plot_regime_winner_distribution(full, out_dir),
-        plot_model_role_summary(full, out_dir),
+        plot_regime_rank_profile(full, out_dir),
+        plot_dl_to_ensemble_bridge(full, out_dir),
     ]
     pd.DataFrame({"figure": [p.name for p in paths], "path": [p.as_posix() for p in paths]}).to_csv(
         out_dir / "figure_manifest.csv", index=False, encoding="utf-8-sig"
