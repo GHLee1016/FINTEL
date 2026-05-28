@@ -14,6 +14,7 @@ from .dl_equal_weight import (
     validate_full_coverage,
 )
 from .visualize_equal_weight import make_all_figures
+from .visualize_dl_master import make_all_dl_master_figures
 
 __all__ = [
     "COUNTRIES",
@@ -27,5 +28,6 @@ __all__ = [
     "coverage_table",
     "evaluate_ensemble_predictions",
     "make_all_figures",
+    "make_all_dl_master_figures",
     "validate_full_coverage",
 ]
