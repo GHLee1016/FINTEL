@@ -1,4 +1,4 @@
 ﻿figure,path
-01_single_dl_winner_map_qlike.png,results/figures/dl_master/01_single_dl_winner_map_qlike.png
-02_regime_model_rank_profile.png,results/figures/dl_master/02_regime_model_rank_profile.png
-03_dl_to_ensemble_bridge.png,results/figures/dl_master/03_dl_to_ensemble_bridge.png
+01_lookback_selection_by_model.png,results/figures/dl_master/01_lookback_selection_by_model.png
+02_regime_lookback_selection_heatmap.png,results/figures/dl_master/02_regime_lookback_selection_heatmap.png
+03_single_dl_winner_map_qlike.png,results/figures/dl_master/03_single_dl_winner_map_qlike.png

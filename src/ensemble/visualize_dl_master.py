@@ -81,6 +81,87 @@ def _best_by_metric(full: pd.DataFrame, metric: str) -> pd.DataFrame:
     return full.loc[idx].copy()
 
 
+def plot_lookback_selection(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
+    """Figure 1: tuned lookback window distribution by DL architecture."""
+    _set_style()
+    l_order = [22, 60, 252]
+    l_labels = {22: "22d\n~1 month", 60: "60d\n~3 months", 252: "252d\n~1 year"}
+    protocol_order = ["static", "expanding"]
+    protocol_colors = {"static": "#93C5FD", "expanding": "#2563EB"}
+
+    counts = (
+        full.groupby(["model", "L", "protocol"], observed=False)
+        .size()
+        .rename("n")
+        .reset_index()
+    )
+
+    fig, axes = plt.subplots(1, len(MODELS), figsize=(12.2, 4.8), sharey=True)
+    for ax, model in zip(axes, MODELS):
+        model_counts = (
+            counts[counts["model"] == model]
+            .pivot_table(index="L", columns="protocol", values="n", aggfunc="sum", fill_value=0)
+            .reindex(l_order, fill_value=0)
+            .reindex(columns=protocol_order, fill_value=0)
+        )
+        bottom = np.zeros(len(l_order))
+        x = np.arange(len(l_order))
+        for protocol in protocol_order:
+            values = model_counts[protocol].to_numpy()
+            bars = ax.bar(
+                x,
+                values,
+                bottom=bottom,
+                width=0.62,
+                color=protocol_colors[protocol],
+                label=protocol,
+            )
+            for i, (bar, value) in enumerate(zip(bars, values)):
+                if value > 0:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        bottom[i] + value / 2,
+                        str(int(value)),
+                        ha="center",
+                        va="center",
+                        fontsize=9,
+                        fontweight="bold",
+                        color="white" if protocol == "expanding" else DARK,
+                    )
+            bottom += values
+        ax.set_title(model, color=MODEL_COLORS[model], fontweight="bold", pad=10)
+        ax.set_xticks(x)
+        ax.set_xticklabels([l_labels[l] for l in l_order], fontsize=9)
+        ax.set_ylim(0, 33)
+        ax.grid(axis="y", color=LIGHT_GRID)
+        ax.spines[["top", "right"]].set_visible(False)
+        if ax is axes[0]:
+            ax.set_ylabel("Selected cells")
+        else:
+            ax.spines["left"].set_visible(False)
+            ax.tick_params(axis="y", length=0)
+
+    handles = [Patch(facecolor=protocol_colors[p], label=p) for p in protocol_order]
+    fig.legend(handles=handles, title="Protocol", loc="upper right", bbox_to_anchor=(0.96, 0.87))
+    fig.suptitle(
+        "DL Models Select Different Historical Lookback Horizons",
+        x=0.06,
+        y=0.98,
+        ha="left",
+        fontsize=16,
+        fontweight="bold",
+    )
+    fig.text(
+        0.06,
+        0.90,
+        "Each bar counts tuned best L choices across regime-country-tier-protocol cells for a given architecture.",
+        color=GRAY,
+        fontsize=10,
+    )
+    fig.tight_layout(rect=(0, 0, 0.95, 0.84))
+    return _save(fig, output_dir, "01_lookback_selection_by_model.png")
+
+
 def plot_qlike_winner_map(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
     """Figure 1: QLIKE best single model changes by condition."""
     _set_style()
@@ -142,7 +223,72 @@ def plot_qlike_winner_map(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> 
     ax.set_xlabel("Feature tier / protocol")
     ax.set_ylabel("Regime / country")
     fig.tight_layout(rect=(0, 0, 0.88, 0.86))
-    return _save(fig, output_dir, "01_single_dl_winner_map_qlike.png")
+    return _save(fig, output_dir, "03_single_dl_winner_map_qlike.png")
+
+
+def plot_regime_lookback_heatmap(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
+    """Figure 2: tuned lookback window distribution by market regime."""
+    _set_style()
+    regime_order = ["normal", "911", "gfc", "covid"]
+    l_order = [22, 60, 252]
+    l_labels = ["22d\n~1 month", "60d\n~3 months", "252d\n~1 year"]
+
+    counts = (
+        full.groupby(["regime", "L"], observed=False)
+        .size()
+        .unstack("L")
+        .reindex(regime_order)
+        .reindex(columns=l_order, fill_value=0)
+    )
+
+    fig, ax = plt.subplots(figsize=(7.6, 5.2))
+    image = ax.imshow(counts.to_numpy(), cmap="Blues", aspect="auto")
+    ax.set_xticks(np.arange(len(l_order)))
+    ax.set_xticklabels(l_labels, fontweight="bold")
+    ax.set_yticks(np.arange(len(regime_order)))
+    ax.set_yticklabels(regime_order, fontweight="bold")
+    ax.set_xlabel("Selected lookback window")
+    ax.set_ylabel("Market regime")
+    fig.suptitle(
+        "Preferred Lookback Horizon Also Changes by Regime",
+        x=0.1,
+        y=0.98,
+        ha="left",
+        fontsize=16,
+        fontweight="bold",
+    )
+    fig.text(
+        0.1,
+        0.905,
+        "Counts aggregate over DL model, country, feature tier, and protocol. Each regime totals 72 selections.",
+        color=GRAY,
+        fontsize=10,
+    )
+
+    max_value = counts.to_numpy().max()
+    for i, regime in enumerate(regime_order):
+        row_total = counts.loc[regime].sum()
+        for j, l_value in enumerate(l_order):
+            value = int(counts.loc[regime, l_value])
+            pct = value / row_total if row_total else 0
+            color = "white" if value > max_value * 0.55 else DARK
+            ax.text(
+                j,
+                i,
+                f"{value}\n{pct:.0%}",
+                ha="center",
+                va="center",
+                fontsize=12,
+                fontweight="bold",
+                color=color,
+            )
+
+    ax.tick_params(length=0)
+    ax.spines[:].set_visible(False)
+    cbar = fig.colorbar(image, ax=ax, fraction=0.04, pad=0.035)
+    cbar.set_label("Selected cells")
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
+    return _save(fig, output_dir, "02_regime_lookback_selection_heatmap.png")
 
 
 def plot_regime_rank_profile(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
@@ -276,9 +422,9 @@ def make_all_dl_master_figures(project_root: str | Path = ".", output_dir: str |
     out_dir = root / FIGURE_DIR if output_dir is None else Path(output_dir)
     full = load_dl_master(root)
     paths = [
+        plot_lookback_selection(full, out_dir),
+        plot_regime_lookback_heatmap(full, out_dir),
         plot_qlike_winner_map(full, out_dir),
-        plot_regime_rank_profile(full, out_dir),
-        plot_dl_to_ensemble_bridge(full, out_dir),
     ]
     pd.DataFrame({"figure": [p.name for p in paths], "path": [p.as_posix() for p in paths]}).to_csv(
         out_dir / "figure_manifest.csv", index=False, encoding="utf-8-sig"
