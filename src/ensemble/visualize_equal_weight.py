@@ -43,7 +43,7 @@ def _set_style() -> None:
             "xtick.color": "#334155",
             "ytick.color": "#334155",
             "font.size": 11,
-            "axes.titlesize": 16,
+            "axes.titlesize": 14,
             "axes.labelsize": 11,
             "legend.frameon": False,
             "savefig.bbox": "tight",
@@ -99,12 +99,18 @@ def plot_overall_gain(comparison: pd.DataFrame, output_dir: Path = FIGURE_DIR) -
     ax.set_yticks(y)
     ax.set_yticklabels([m for m, _, _, _ in metrics], fontweight="bold")
     ax.set_xlabel("Share of cells where ensemble beats best single DL")
-    ax.set_title("Equal-Weight Ensemble Improves Most Experiment Cells", loc="left", pad=16)
-    ax.text(
-        0,
-        1.05,
+    fig.suptitle(
+        "Equal-Weight Ensemble Improves Most Experiment Cells",
+        x=0.13,
+        y=0.98,
+        ha="left",
+        fontsize=16,
+        fontweight="bold",
+    )
+    fig.text(
+        0.13,
+        0.9,
         "Comparison unit: 72 cells = regime x country x feature tier x protocol",
-        transform=ax.transAxes,
         color=GRAY,
         fontsize=10,
     )
@@ -127,132 +133,139 @@ def plot_overall_gain(comparison: pd.DataFrame, output_dir: Path = FIGURE_DIR) -
     return _save(fig, output_dir, "01_overall_ensemble_gain.png")
 
 
-def plot_single_vs_ensemble_scatter(
+def plot_improvement_distribution(
     comparison: pd.DataFrame,
     output_dir: Path = FIGURE_DIR,
 ) -> Path:
-    """Figure 2: best single DL versus best ensemble, QLIKE and RMSE_CV."""
+    """Figure 2: sorted cell-level improvements against the best single DL."""
     _set_style()
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.2))
+    fig, axes = plt.subplots(2, 1, figsize=(12.5, 7.5), sharex=True)
     panels = [
-        ("QLIKE", "single_QLIKE", "ensemble_QLIKE", "ensemble_better_QLIKE", BLUE),
-        ("RMSE_CV", "single_RMSE_CV", "ensemble_RMSE_CV", "ensemble_better_RMSE_CV", GREEN),
+        ("QLIKE", "QLIKE_improvement", "ensemble_better_QLIKE", BLUE),
+        ("RMSE_CV", "RMSE_CV_improvement", "ensemble_better_RMSE_CV", GREEN),
     ]
-    protocol_markers = {"static": "o", "expanding": "s"}
 
-    for ax, (label, x_col, y_col, flag_col, color) in zip(axes, panels):
-        lo = min(comparison[x_col].min(), comparison[y_col].min())
-        hi = max(comparison[x_col].max(), comparison[y_col].max())
-        pad = (hi - lo) * 0.08
-        lo -= pad
-        hi += pad
-        ax.plot([lo, hi], [lo, hi], linestyle="--", color="#94A3B8", linewidth=1.2)
-
-        for protocol, marker in protocol_markers.items():
-            sub = comparison[comparison["protocol"] == protocol]
-            ax.scatter(
-                sub[x_col],
-                sub[y_col],
-                s=54,
-                marker=marker,
-                c=np.where(sub[flag_col], color, RED),
-                edgecolor="white",
-                linewidth=0.8,
-                alpha=0.88,
-                label=protocol,
-            )
-
+    for ax, (label, value_col, flag_col, color) in zip(axes, panels):
+        frame = comparison.sort_values(value_col, ascending=True).reset_index(drop=True)
+        values = frame[value_col].to_numpy()
+        bar_colors = np.where(values >= 0, color, RED)
+        ax.bar(np.arange(len(values)), values, color=bar_colors, width=0.86)
+        ax.axhline(0, color="#475569", linewidth=1.0)
         wins = int(comparison[flag_col].sum())
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-        ax.set_xlabel(f"Best single DL {label}")
-        ax.set_ylabel(f"Best ensemble {label}")
-        ax.set_title(f"{label}: {wins}/72 cells improved", loc="left")
+        losses = len(comparison) - wins
+        ax.set_title(f"{label}: {wins} wins, {losses} losses out of 72 cells", loc="left")
+        ax.set_ylabel("Improvement")
         ax.text(
-            0.03,
-            0.94,
-            "Below diagonal = ensemble wins",
+            0.01,
+            0.88,
+            "Above zero = ensemble beats the best single DL",
             transform=ax.transAxes,
             color=GRAY,
-            fontsize=9,
+            fontsize=10,
         )
         ax.grid(color=LIGHT_GRID, linewidth=0.8)
+        ax.spines[["top", "right"]].set_visible(False)
 
-    axes[0].legend(title="Protocol", loc="lower right")
-    fig.suptitle("Best Ensemble vs. Best Single DL", x=0.02, ha="left", fontsize=17, fontweight="bold")
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
-    return _save(fig, output_dir, "02_single_vs_ensemble_scatter.png")
+    axes[-1].set_xlabel("Experiment cells sorted from weakest to strongest improvement")
+    fig.suptitle(
+        "Cell-Level Improvements Are Broad, Not Driven by a Few Outliers",
+        x=0.02,
+        y=0.98,
+        ha="left",
+        fontsize=16,
+        fontweight="bold",
+    )
+    fig.text(
+        0.02,
+        0.935,
+        "Each bar is one regime-country-tier-protocol cell; positive bars mean the best ensemble outperformed the best single DL.",
+        color=GRAY,
+        fontsize=10,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
+    return _save(fig, output_dir, "02_cell_level_improvement_distribution.png")
 
 
-def plot_improvement_heatmap(comparison: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
-    """Figure 3: QLIKE improvement by market condition and experiment axis."""
+def plot_market_condition_map(comparison: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
+    """Figure 3: QLIKE win coverage by regime and country."""
     _set_style()
     data = comparison.copy()
     regime_order = ["normal", "911", "gfc", "covid"]
     country_order = ["US", "KR", "JP"]
-    tier_order = ["core", "momentum", "extended"]
-    protocol_order = ["static", "expanding"]
 
-    data["row"] = pd.Categorical(
-        data["regime"] + " / " + data["country"],
-        categories=[f"{r} / {c}" for r in regime_order for c in country_order],
-        ordered=True,
+    grouped = (
+        data.groupby(["regime", "country"])
+        .agg(
+            wins=("ensemble_better_QLIKE", "sum"),
+            cells=("ensemble_better_QLIKE", "count"),
+            mean_improvement=("QLIKE_improvement", "mean"),
+        )
+        .reset_index()
     )
-    data["col"] = pd.Categorical(
-        data["feature_set"] + "\n" + data["protocol"],
-        categories=[f"{t}\n{p}" for t in tier_order for p in protocol_order],
-        ordered=True,
+    grouped["rate"] = grouped["wins"] / grouped["cells"]
+    win_matrix = grouped.pivot(index="regime", columns="country", values="rate").loc[regime_order, country_order]
+    wins = grouped.pivot(index="regime", columns="country", values="wins").loc[regime_order, country_order]
+    mean_imp = (
+        grouped.pivot(index="regime", columns="country", values="mean_improvement")
+        .loc[regime_order, country_order]
+        .fillna(0)
     )
-    matrix = data.pivot(index="row", columns="col", values="QLIKE_improvement").sort_index()
-    values = matrix.to_numpy(dtype=float)
-    vmax = float(np.nanmax(np.abs(values)))
 
-    fig, ax = plt.subplots(figsize=(11.5, 7.2))
-    im = ax.imshow(values, cmap="RdYlGn", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_xticks(np.arange(matrix.shape[1]))
-    ax.set_xticklabels(matrix.columns, fontsize=9)
-    ax.set_yticks(np.arange(matrix.shape[0]))
-    ax.set_yticklabels(matrix.index, fontsize=10)
-    ax.set_title("QLIKE Improvement Is Broadly Distributed Across Market Conditions", loc="left", pad=16)
-    ax.text(
-        0,
-        1.04,
-        "Positive values mean best ensemble has lower QLIKE than the best single DL model. Cell labels are x1,000.",
-        transform=ax.transAxes,
+    fig, ax = plt.subplots(figsize=(8.8, 6.4))
+    im = ax.imshow(win_matrix.to_numpy(), cmap="YlGn", vmin=0.65, vmax=1.0, aspect="auto")
+    ax.set_xticks(np.arange(len(country_order)))
+    ax.set_xticklabels(country_order, fontweight="bold")
+    ax.set_yticks(np.arange(len(regime_order)))
+    ax.set_yticklabels(regime_order, fontweight="bold")
+    ax.set_title("Ensemble Gains Appear Across Markets and Crisis Regimes", loc="left", pad=14)
+    fig.text(
+        0.125,
+        0.9,
+        "Cell label: QLIKE wins out of six tier-protocol settings; parenthesis is average QLIKE improvement x1,000.",
         color=GRAY,
         fontsize=10,
     )
-
-    for i in range(values.shape[0]):
-        for j in range(values.shape[1]):
-            val = values[i, j]
-            if np.isnan(val):
-                continue
-            label = f"{val * 1000:.1f}"
-            ax.text(j, i, label, ha="center", va="center", fontsize=8, color=DARK)
-
-    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.025)
-    cbar.set_label("QLIKE improvement x 1.0")
+    for i, regime in enumerate(regime_order):
+        for j, country in enumerate(country_order):
+            ax.text(
+                j,
+                i,
+                f"{int(wins.loc[regime, country])}/6\n({mean_imp.loc[regime, country] * 1000:.1f})",
+                ha="center",
+                va="center",
+                fontsize=13,
+                fontweight="bold",
+                color="white" if win_matrix.loc[regime, country] >= 0.95 else DARK,
+            )
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.035)
+    cbar.set_label("QLIKE win rate")
     ax.tick_params(length=0)
-    ax.set_xlabel("Feature tier / protocol")
-    ax.set_ylabel("Regime / country")
-    return _save(fig, output_dir, "03_qlike_improvement_heatmap.png")
+    ax.set_xlabel("Country")
+    ax.set_ylabel("Regime")
+    fig.tight_layout(rect=(0, 0, 1, 0.86))
+    return _save(fig, output_dir, "03_market_condition_win_map.png")
 
 
 def plot_axis_robustness(comparison: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
     """Figure 4: win rates by protocol and feature tier."""
     _set_style()
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.8))
 
     protocol = comparison.groupby("protocol").agg(
         QLIKE=("ensemble_better_QLIKE", "mean"),
         RMSE_CV=("ensemble_better_RMSE_CV", "mean"),
+        n=("ensemble_better_QLIKE", "count"),
+        QLIKE_wins=("ensemble_better_QLIKE", "sum"),
+        RMSE_CV_wins=("ensemble_better_RMSE_CV", "sum"),
     )
     protocol = protocol.loc[["static", "expanding"]]
 
     tier = comparison.groupby("feature_set").agg(
         QLIKE=("ensemble_better_QLIKE", "mean"),
         RMSE_CV=("ensemble_better_RMSE_CV", "mean"),
+        n=("ensemble_better_QLIKE", "count"),
+        QLIKE_wins=("ensemble_better_QLIKE", "sum"),
+        RMSE_CV_wins=("ensemble_better_RMSE_CV", "sum"),
     )
     tier = tier.loc[["core", "momentum", "extended"]]
 
@@ -271,21 +284,30 @@ def plot_axis_robustness(comparison: pd.DataFrame, output_dir: Path = FIGURE_DIR
         ax.set_title(title, loc="left")
         ax.grid(axis="y", color=LIGHT_GRID, linewidth=0.8)
         ax.spines[["top", "right"]].set_visible(False)
-        for bars in [bars1, bars2]:
-            for bar in bars:
+        for bars, wins_col in [(bars1, "QLIKE_wins"), (bars2, "RMSE_CV_wins")]:
+            for k, bar in enumerate(bars):
+                wins = int(frame.iloc[k][wins_col])
+                total = int(frame.iloc[k]["n"])
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.025,
-                    f"{bar.get_height():.0%}",
+                    f"{wins}/{total}\n{bar.get_height():.0%}",
                     ha="center",
                     va="bottom",
-                    fontsize=10,
+                    fontsize=9,
                     fontweight="bold",
                 )
 
     axes[0].legend(loc="lower right")
-    fig.suptitle("Where the Ensemble Is Most Robust", x=0.02, ha="left", fontsize=17, fontweight="bold")
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.suptitle("Robustness Is Strongest Under Expanding Evaluation and Simpler Feature Sets", x=0.02, ha="left", fontsize=16, fontweight="bold")
+    fig.text(
+        0.02,
+        0.91,
+        "Bars show how often the best ensemble beats the best single DL within each experimental axis.",
+        color=GRAY,
+        fontsize=10,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.86))
     return _save(fig, output_dir, "04_robustness_by_axis.png")
 
 
@@ -322,13 +344,14 @@ def plot_model_complementarity(comparison: pd.DataFrame, output_dir: Path = FIGU
     fig.suptitle(
         "Complementary Temporal Structures Drive Ensemble Gains",
         x=0.02,
+        y=0.98,
         ha="left",
-        fontsize=17,
+        fontsize=16,
         fontweight="bold",
     )
     fig.text(
         0.02,
-        0.93,
+        0.91,
         "LSTM+TCN+TST is the most frequent best combo, suggesting persistence, long-lag patterns, and global attention are complementary.",
         color=GRAY,
         fontsize=10,
@@ -345,8 +368,8 @@ def make_all_figures(project_root: str | Path = ".", output_dir: str | Path | No
 
     paths = [
         plot_overall_gain(comparison, out_dir),
-        plot_single_vs_ensemble_scatter(comparison, out_dir),
-        plot_improvement_heatmap(comparison, out_dir),
+        plot_improvement_distribution(comparison, out_dir),
+        plot_market_condition_map(comparison, out_dir),
         plot_axis_robustness(comparison, out_dir),
         plot_model_complementarity(comparison, out_dir),
     ]
