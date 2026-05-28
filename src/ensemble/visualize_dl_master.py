@@ -81,65 +81,8 @@ def _best_by_metric(full: pd.DataFrame, metric: str) -> pd.DataFrame:
     return full.loc[idx].copy()
 
 
-def plot_single_winner_counts(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
-    """Figure 1: best single DL model changes when metric changes."""
-    _set_style()
-    best_qlike = _best_by_metric(full, "QLIKE")
-    best_rmse = _best_by_metric(full, "RMSE_CV")
-
-    counts = pd.DataFrame(
-        {
-            "QLIKE": best_qlike["model"].value_counts().reindex(MODELS, fill_value=0),
-            "RMSE_CV": best_rmse["model"].value_counts().reindex(MODELS, fill_value=0),
-        }
-    )
-
-    fig, ax = plt.subplots(figsize=(9.5, 5.4))
-    x = np.arange(len(MODELS))
-    width = 0.35
-    bars1 = ax.bar(x - width / 2, counts["QLIKE"], width, color=BLUE, label="QLIKE")
-    bars2 = ax.bar(x + width / 2, counts["RMSE_CV"], width, color=GREEN, label="RMSE_CV")
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(MODELS, fontweight="bold")
-    ax.set_ylim(0, max(counts.max()) + 8)
-    ax.set_ylabel("Number of cells where model is best")
-    fig.suptitle(
-        "The Best Single DL Model Depends on the Evaluation Metric",
-        x=0.12,
-        y=0.98,
-        ha="left",
-        fontsize=16,
-        fontweight="bold",
-    )
-    fig.text(
-        0.12,
-        0.9,
-        "Unit: 72 cells. Lower QLIKE/RMSE_CV is better.",
-        color=GRAY,
-        fontsize=10,
-    )
-    ax.grid(axis="y", color=LIGHT_GRID)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(loc="upper right")
-
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.8,
-                f"{int(bar.get_height())}",
-                ha="center",
-                va="bottom",
-                fontweight="bold",
-            )
-
-    fig.tight_layout(rect=(0, 0, 1, 0.86))
-    return _save(fig, output_dir, "01_single_dl_winner_counts.png")
-
-
 def plot_qlike_winner_map(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
-    """Figure 2: QLIKE best single model changes by condition."""
+    """Figure 1: QLIKE best single model changes by condition."""
     _set_style()
     best = _best_by_metric(full, "QLIKE")
     regime_order = ["normal", "911", "gfc", "covid"]
@@ -199,20 +142,70 @@ def plot_qlike_winner_map(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> 
     ax.set_xlabel("Feature tier / protocol")
     ax.set_ylabel("Regime / country")
     fig.tight_layout(rect=(0, 0, 0.88, 0.86))
-    return _save(fig, output_dir, "02_single_dl_winner_map_qlike.png")
+    return _save(fig, output_dir, "01_single_dl_winner_map_qlike.png")
+
+
+def plot_regime_winner_distribution(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
+    """Figure 2: QLIKE best single DL composition by market regime."""
+    _set_style()
+    best = _best_by_metric(full, "QLIKE")
+    regime_order = ["normal", "911", "gfc", "covid"]
+    counts = pd.crosstab(best["regime"], best["model"]).reindex(regime_order).reindex(columns=MODELS, fill_value=0)
+
+    fig, ax = plt.subplots(figsize=(10.8, 5.8))
+    bottom = np.zeros(len(counts))
+    x = np.arange(len(counts))
+    for model in MODELS:
+        values = counts[model].to_numpy()
+        bars = ax.bar(x, values, bottom=bottom, label=model, color=MODEL_COLORS[model], width=0.64)
+        for i, (bar, value) in enumerate(zip(bars, values)):
+            if value > 0:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bottom[i] + value / 2,
+                    str(int(value)),
+                    ha="center",
+                    va="center",
+                    color="white",
+                    fontweight="bold",
+                    fontsize=11,
+                )
+        bottom += values
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(regime_order, fontweight="bold")
+    ax.set_ylim(0, 18.8)
+    ax.set_ylabel("Number of QLIKE-best cells")
+    fig.suptitle(
+        "Different Market Regimes Favor Different DL Structures",
+        x=0.12,
+        y=0.98,
+        ha="left",
+        fontsize=16,
+        fontweight="bold",
+    )
+    fig.text(
+        0.12,
+        0.91,
+        "Each regime has 18 cells. Normal favors LSTM; 911 favors TST; GFC shows more local-shock diversity.",
+        color=GRAY,
+        fontsize=10,
+    )
+    ax.grid(axis="y", color=LIGHT_GRID)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(title="Best single DL", bbox_to_anchor=(1.01, 1), loc="upper left")
+    fig.tight_layout(rect=(0, 0, 0.86, 0.86))
+    return _save(fig, output_dir, "02_regime_winner_distribution_qlike.png")
 
 
 def plot_model_role_summary(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -> Path:
-    """Figure 3: connect model structure hypotheses with empirical winner counts."""
+    """Figure 3: connect model structure hypotheses with QLIKE winner counts."""
     _set_style()
     best_qlike = _best_by_metric(full, "QLIKE")
-    best_rmse = _best_by_metric(full, "RMSE_CV")
     counts = pd.DataFrame(
         {
             "QLIKE wins": best_qlike["model"].value_counts().reindex(MODELS, fill_value=0),
-            "RMSE_CV wins": best_rmse["model"].value_counts().reindex(MODELS, fill_value=0),
             "Median QLIKE": full.groupby("model", observed=False)["QLIKE"].median().reindex(MODELS),
-            "Median RMSE_CV": full.groupby("model", observed=False)["RMSE_CV"].median().reindex(MODELS),
         }
     )
 
@@ -239,27 +232,23 @@ def plot_model_role_summary(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -
     )
 
     x = np.arange(len(MODELS))
-    width = 0.35
-    bars1 = axes[1].bar(x - width / 2, counts["QLIKE wins"], width, color=BLUE, label="QLIKE wins")
-    bars2 = axes[1].bar(x + width / 2, counts["RMSE_CV wins"], width, color=GREEN, label="RMSE_CV wins")
+    bars1 = axes[1].bar(x, counts["QLIKE wins"], color=[MODEL_COLORS[m] for m in MODELS], width=0.62)
     axes[1].set_xticks(x)
     axes[1].set_xticklabels(MODELS, fontweight="bold")
-    axes[1].set_ylabel("Best-single count out of 72 cells")
-    axes[1].set_title("Empirical single-model winners are distributed", loc="left", pad=12)
+    axes[1].set_ylabel("QLIKE-best count out of 72 cells")
+    axes[1].set_title("Empirical QLIKE winners are distributed", loc="left", pad=12)
     axes[1].grid(axis="y", color=LIGHT_GRID)
     axes[1].spines[["top", "right"]].set_visible(False)
-    axes[1].legend(loc="upper right")
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            axes[1].text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.8,
-                f"{int(bar.get_height())}",
-                ha="center",
-                va="bottom",
-                fontweight="bold",
-                fontsize=10,
-            )
+    for bar in bars1:
+        axes[1].text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.8,
+            f"{int(bar.get_height())}",
+            ha="center",
+            va="bottom",
+            fontweight="bold",
+            fontsize=10,
+        )
 
     fig.suptitle(
         "Single-DL Results Motivate an Ensemble Rather Than One Fixed Winner",
@@ -272,7 +261,7 @@ def plot_model_role_summary(full: pd.DataFrame, output_dir: Path = FIGURE_DIR) -
     fig.text(
         0.02,
         0.915,
-        "Different architectures win under different metrics and conditions, supporting the complementarity hypothesis.",
+        "Different architectures win under different market conditions, supporting the complementarity hypothesis.",
         color=GRAY,
         fontsize=10,
     )
@@ -286,8 +275,8 @@ def make_all_dl_master_figures(project_root: str | Path = ".", output_dir: str |
     out_dir = root / FIGURE_DIR if output_dir is None else Path(output_dir)
     full = load_dl_master(root)
     paths = [
-        plot_single_winner_counts(full, out_dir),
         plot_qlike_winner_map(full, out_dir),
+        plot_regime_winner_distribution(full, out_dir),
         plot_model_role_summary(full, out_dir),
     ]
     pd.DataFrame({"figure": [p.name for p in paths], "path": [p.as_posix() for p in paths]}).to_csv(
