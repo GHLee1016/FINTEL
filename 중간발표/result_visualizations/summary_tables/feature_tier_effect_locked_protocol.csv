@@ -1,0 +1,13 @@
+﻿country,regime,locked_protocol
+JP,911,expanding
+JP,covid,expanding
+JP,gfc,static
+JP,normal,expanding
+KR,911,static
+KR,covid,static
+KR,gfc,expanding
+KR,normal,expanding
+US,911,expanding
+US,covid,expanding
+US,gfc,expanding
+US,normal,expanding

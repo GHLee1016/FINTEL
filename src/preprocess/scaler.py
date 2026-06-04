@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Dict, List
 
 import numpy as np
@@ -70,6 +71,25 @@ SCALING_CONFIG: Dict[str, Dict] = {
 
 # 타깃 — feature_cols에 절대 들어가면 안 됨
 TARGET_COLUMN = "RV_target"
+
+
+# ---------------------------------------------------------------------------
+# DL 전용 Scaling 정책
+# ---------------------------------------------------------------------------
+# ML 정책(SCALING_CONFIG)과의 단 한 가지 차이: `neg_return`을 no_scaling → robust 그룹으로 이동.
+#
+# 이유:
+# - `neg_return = min(0, log_return)` 이라 log_return과 같은 단위(log return의 음수 부분)
+# - 그러나 ML에서는 "이미 정규화된 값"으로 분류돼 no_scaling 처리됨 (std ≈ 0.01)
+# - 결과적으로 다른 robust features(std ≈ 1) 대비 100배 작은 스케일 → NN(input scale 민감)에선 학습 시 사실상 무시
+# - RobustScaler 적용 시: median = 0 (zero 비율 ~50%) 인 cell이 대다수라
+#   0의 의미("상승/무변동")는 거의 보존되고, 음수 값들이 의미있게 spread out
+# - 911 cell처럼 median이 살짝 음수인 cell에서도 0 이동량은 ≤ +0.12 수준 (StandardScaler 대비 1/5)
+#
+# ML 결과(이미 학습 완료)는 그대로 두고, DL 전용 새 config로 분리.
+SCALING_CONFIG_DL: Dict[str, Dict] = copy.deepcopy(SCALING_CONFIG)
+SCALING_CONFIG_DL["robust"]["columns"].append("neg_return")
+SCALING_CONFIG_DL["no_scaling"]["columns"].remove("neg_return")
 
 
 # ---------------------------------------------------------------------------
