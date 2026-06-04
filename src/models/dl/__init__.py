@@ -3,6 +3,7 @@
 from .cnn1d import CNN1DModel, CNN1DNet
 from .lstm import LSTMModel, LSTMNet
 from .tcn import TCNModel, TCNNet
+from .tst import TSTModel, TSTNet
 
 __all__ = [
     "CNN1DNet",
@@ -11,4 +12,6 @@ __all__ = [
     "LSTMModel",
     "TCNNet",
     "TCNModel",
+    "TSTNet",
+    "TSTModel",
 ]
