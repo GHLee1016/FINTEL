@@ -1,15 +1,13 @@
-"""Generate final-report ML comparison figures.
+"""Generate final-report ML/DL visualization assets for FINTEL.
 
-The script intentionally uses only pandas/numpy/Pillow so it can run in a
-minimal environment without matplotlib. Outputs are written under
-results/figures/ml_final and do not overwrite existing figures.
+The output is intentionally chart-first: each PNG is a clean analytical graph
+that can be inserted into the final report or a slide, with minimal narrative.
+Only pandas/numpy/Pillow are required.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -22,38 +20,33 @@ OUT = RESULTS / "figures" / "ml_final"
 
 W, H = 1600, 1000
 BG = "#FFFFFF"
-DARK = "#111827"
+INK = "#111827"
 TEXT = "#334155"
 MUTED = "#64748B"
 GRID = "#E5E7EB"
-GRID_DARK = "#CBD5E1"
-SOFT = "#F8FAFC"
+BLUE = "#2563EB"
+BLUE_L = "#DBEAFE"
+GREEN = "#059669"
+GREEN_L = "#D1FAE5"
+ORANGE = "#EA580C"
+ORANGE_L = "#FFEDD5"
+RED = "#DC2626"
+RED_L = "#FEE2E2"
+PURPLE = "#7C3AED"
+PURPLE_L = "#EDE9FE"
+TEAL = "#0F766E"
+SLATE = "#475569"
 
 REGIMES = ["normal", "911", "gfc", "covid"]
 COUNTRIES = ["US", "KR", "JP"]
 TIERS = ["core", "momentum", "extended"]
-PROTOCOLS = ["static", "expanding"]
 ML_MODELS = ["Ridge", "ElasticNet", "Huber", "LightGBM", "XGBoost"]
-FIN_MODELS = ["GARCH", "HAR_RV"]
-DL_MODELS = ["LSTM", "TST", "1DCNN", "TCN"]
-
 MODEL_COLORS = {
-    "Ridge": "#2563EB",
-    "ElasticNet": "#7C3AED",
-    "Huber": "#92400E",
-    "LightGBM": "#059669",
-    "XGBoost": "#DC2626",
-    "Financial": "#64748B",
-    "ML": "#2563EB",
-    "Single DL": "#8B5CF6",
-    "Ensemble": "#0F766E",
-}
-
-REGIME_COLORS = {
-    "normal": "#2563EB",
-    "911": "#F97316",
-    "gfc": "#DC2626",
-    "covid": "#059669",
+    "Ridge": BLUE,
+    "ElasticNet": PURPLE,
+    "Huber": ORANGE,
+    "LightGBM": GREEN,
+    "XGBoost": RED,
 }
 
 
@@ -69,376 +62,401 @@ def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-F_TITLE = font(42, True)
-F_SUB = font(22)
-F_H = font(24, True)
-F_BODY = font(21)
-F_SMALL = font(17)
-F_TINY = font(14)
+F_TITLE = font(38, True)
+F_SUB = font(20)
+F_AXIS = font(18)
+F_LABEL = font(21)
+F_SMALL = font(16)
+F_NUM = font(18, True)
 
 
-@dataclass
-class Canvas:
-    image: Image.Image
-    draw: ImageDraw.ImageDraw
+def text_size(d: ImageDraw.ImageDraw, text: str, fnt: ImageFont.ImageFont) -> tuple[int, int]:
+    box = d.textbbox((0, 0), text, font=fnt)
+    return box[2] - box[0], box[3] - box[1]
 
 
-def new_canvas(title: str, subtitle: str) -> Canvas:
+def canvas(title: str, subtitle: str) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
-    d.text((80, 54), title, fill=DARK, font=F_TITLE)
-    d.text((80, 114), subtitle, fill=MUTED, font=F_SUB)
-    return Canvas(img, d)
+    d.text((70, 46), title, fill=INK, font=F_TITLE)
+    d.text((70, 94), subtitle, fill=MUTED, font=F_SUB)
+    return img, d
 
 
-def save(canvas: Canvas, name: str) -> Path:
-    OUT.mkdir(parents=True, exist_ok=True)
-    path = OUT / name
-    canvas.image.save(path, quality=95)
-    return path
+def footer(d: ImageDraw.ImageDraw, note: str) -> None:
+    d.text((70, 952), note, fill=MUTED, font=F_SMALL)
 
 
-def text_center(d: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, fill: str, fnt: ImageFont.ImageFont) -> None:
-    bbox = d.multiline_textbbox((0, 0), text, font=fnt, spacing=3, align="center")
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = box[0] + (box[2] - box[0] - tw) / 2
-    y = box[1] + (box[3] - box[1] - th) / 2
-    d.multiline_text((x, y), text, fill=fill, font=fnt, spacing=3, align="center")
+def save(img: Image.Image, name: str) -> None:
+    img.save(OUT / name, quality=95)
 
 
-def draw_legend(d: ImageDraw.ImageDraw, items: Iterable[tuple[str, str]], x: int, y: int, cols: int = 4) -> None:
-    for idx, (label, color) in enumerate(items):
-        col = idx % cols
-        row = idx // cols
-        xx = x + col * 230
-        yy = y + row * 34
-        d.rounded_rectangle((xx, yy, xx + 24, yy + 24), radius=5, fill=color)
-        d.text((xx + 34, yy - 1), label, fill=TEXT, font=F_SMALL)
+def qlike_axis(values: pd.Series, lo_pad: float = 0.0) -> tuple[float, float]:
+    vals = values.replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    lo, hi = float(vals.min()), float(vals.max())
+    pad = max((hi - lo) * 0.08, 1e-6)
+    return max(0.0, lo - pad - lo_pad), hi + pad
+
+
+def pct_axis(values: pd.Series, symmetric: bool = False) -> tuple[float, float]:
+    vals = values.replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    lo, hi = float(vals.min()), float(vals.max())
+    if symmetric:
+        m = max(abs(lo), abs(hi), 1.0)
+        return -m * 1.12, m * 1.12
+    pad = max((hi - lo) * 0.1, 1.0)
+    return lo - pad, hi + pad
+
+
+def draw_grid_y(d: ImageDraw.ImageDraw, box: tuple[int, int, int, int], y_ticks: list[float], y_min: float, y_max: float, suffix: str = "") -> None:
+    x0, y0, x1, y1 = box
+    for tick in y_ticks:
+        if tick < y_min or tick > y_max:
+            continue
+        y = y1 - (tick - y_min) / (y_max - y_min) * (y1 - y0)
+        d.line((x0, y, x1, y), fill=GRID, width=1)
+        label = f"{tick:g}{suffix}"
+        tw, th = text_size(d, label, F_AXIS)
+        d.text((x0 - tw - 12, y - th / 2), label, fill=MUTED, font=F_AXIS)
+    d.line((x0, y1, x1, y1), fill="#CBD5E1", width=2)
+    d.line((x0, y0, x0, y1), fill="#CBD5E1", width=2)
+
+
+def grouped_bar_chart(
+    d: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    data: pd.DataFrame,
+    groups: list[str],
+    series: list[str],
+    colors: dict[str, str],
+    y_min: float,
+    y_max: float,
+    y_ticks: list[float],
+    suffix: str = "",
+    zero_line: bool = False,
+) -> None:
+    x0, y0, x1, y1 = box
+    draw_grid_y(d, box, y_ticks, y_min, y_max, suffix=suffix)
+    if zero_line and y_min < 0 < y_max:
+        y = y1 - (0 - y_min) / (y_max - y_min) * (y1 - y0)
+        d.line((x0, y, x1, y), fill=SLATE, width=2)
+
+    group_w = (x1 - x0) / len(groups)
+    bar_w = min(42, group_w / (len(series) + 1.4))
+    for gi, group in enumerate(groups):
+        center = x0 + group_w * (gi + 0.5)
+        for si, name in enumerate(series):
+            value = float(data.loc[group, name])
+            bx0 = center - (len(series) * bar_w) / 2 + si * bar_w
+            bx1 = bx0 + bar_w * 0.82
+            y_val = y1 - (value - y_min) / (y_max - y_min) * (y1 - y0)
+            y_zero = y1 - (0 - y_min) / (y_max - y_min) * (y1 - y0) if y_min < 0 < y_max else y1
+            d.rounded_rectangle((bx0, min(y_val, y_zero), bx1, max(y_val, y_zero)), radius=3, fill=colors[name])
+            label = f"{value:.1f}{suffix}"
+            tw, th = text_size(d, label, F_SMALL)
+            ly = min(y_val, y_zero) - th - 6 if value >= 0 else max(y_val, y_zero) + 4
+            d.text((bx0 + (bx1 - bx0 - tw) / 2, ly), label, fill=TEXT, font=F_SMALL)
+        tw, th = text_size(d, group, F_LABEL)
+        d.text((center - tw / 2, y1 + 22), group, fill=TEXT, font=F_LABEL)
+
+    lx = x1 - 360
+    for i, name in enumerate(series):
+        display_name = {
+            "momentum_vs_core": "Momentum vs core",
+            "extended_vs_core": "Extended vs core",
+            "ensemble_gain_pct": "Ensemble gain",
+            "dl_win_rate": "DL win rate",
+        }.get(name, name)
+        d.rounded_rectangle((lx, y0 - 48 + i * 30, lx + 22, y0 - 29 + i * 30), radius=3, fill=colors[name])
+        d.text((lx + 32, y0 - 51 + i * 30), display_name, fill=TEXT, font=F_AXIS)
+
+
+def dot_distribution(
+    d: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    rows: pd.DataFrame,
+    group_col: str,
+    value_col: str,
+    groups: list[str],
+    y_min: float,
+    y_max: float,
+    ticks: list[float],
+    color: str,
+    suffix: str = "%",
+    zero_line: bool = False,
+) -> None:
+    x0, y0, x1, y1 = box
+    draw_grid_y(d, box, ticks, y_min, y_max, suffix=suffix)
+    if zero_line and y_min < 0 < y_max:
+        y = y1 - (0 - y_min) / (y_max - y_min) * (y1 - y0)
+        d.line((x0, y, x1, y), fill=SLATE, width=2)
+    group_w = (x1 - x0) / len(groups)
+    offsets = [-33, -22, -11, 0, 11, 22, 33, -27, -16, -5, 5, 16, 27]
+    for gi, group in enumerate(groups):
+        vals = rows.loc[rows[group_col] == group, value_col].dropna().astype(float).tolist()
+        center = x0 + group_w * (gi + 0.5)
+        for i, value in enumerate(vals):
+            x = center + offsets[i % len(offsets)]
+            y = y1 - (value - y_min) / (y_max - y_min) * (y1 - y0)
+            d.ellipse((x - 7, y - 7, x + 7, y + 7), fill=color, outline=BG, width=2)
+        mean = float(np.mean(vals))
+        y_mean = y1 - (mean - y_min) / (y_max - y_min) * (y1 - y0)
+        d.line((center - 50, y_mean, center + 50, y_mean), fill=INK, width=4)
+        label = f"mean {mean:.1f}{suffix}"
+        tw, th = text_size(d, label, F_SMALL)
+        d.text((center - tw / 2, y_mean - th - 8), label, fill=INK, font=F_SMALL)
+        tw, th = text_size(d, group, F_LABEL)
+        d.text((center - tw / 2, y1 + 22), group, fill=TEXT, font=F_LABEL)
+
+
+def heat_color(value: float, max_value: float, base: str) -> str:
+    if max_value <= 0:
+        return "#F8FAFC"
+    alpha = value / max_value
+    if base == "green":
+        start, end = np.array([236, 253, 245]), np.array([5, 150, 105])
+    else:
+        start, end = np.array([239, 246, 255]), np.array([37, 99, 235])
+    rgb = (start * (1 - alpha) + end * alpha).astype(int)
+    return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+
+
+def heatmap_counts(d: ImageDraw.ImageDraw, box: tuple[int, int, int, int], matrix: pd.DataFrame, base: str = "blue") -> None:
+    x0, y0, x1, y1 = box
+    rows = list(matrix.index)
+    cols = list(matrix.columns)
+    cw = (x1 - x0) / len(cols)
+    ch = (y1 - y0) / len(rows)
+    max_v = float(matrix.max().max())
+    for ci, col in enumerate(cols):
+        tw, th = text_size(d, col, F_AXIS)
+        d.text((x0 + cw * (ci + 0.5) - tw / 2, y0 - 36), col, fill=TEXT, font=F_AXIS)
+    for ri, row in enumerate(rows):
+        tw, th = text_size(d, row, F_LABEL)
+        d.text((x0 - tw - 18, y0 + ch * (ri + 0.5) - th / 2), row, fill=TEXT, font=F_LABEL)
+        for ci, col in enumerate(cols):
+            val = float(matrix.loc[row, col])
+            fill = heat_color(val, max_v, base)
+            rx0 = x0 + ci * cw + 4
+            ry0 = y0 + ri * ch + 4
+            rx1 = x0 + (ci + 1) * cw - 4
+            ry1 = y0 + (ri + 1) * ch - 4
+            d.rounded_rectangle((rx0, ry0, rx1, ry1), radius=5, fill=fill, outline=BG)
+            label = f"{int(val)}"
+            tw, th = text_size(d, label, F_NUM)
+            d.text((rx0 + (rx1 - rx0 - tw) / 2, ry0 + (ry1 - ry0 - th) / 2), label, fill=INK, font=F_NUM)
 
 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    fin = pd.read_csv(RESULTS / "financial_results.csv")
-    fin = fin[fin["phase"].eq("Full Test")].copy()
-
-    ml_frames = []
-    for tier in TIERS:
-        df = pd.read_csv(RESULTS / f"ml_results_{tier}.csv")
-        ml_frames.append(df)
-    ml = pd.concat(ml_frames, ignore_index=True)
-    ml = ml[ml["phase"].eq("Full Test")].copy()
-
+    ml = pd.concat(
+        [pd.read_csv(RESULTS / f"ml_results_{tier}.csv") for tier in TIERS],
+        ignore_index=True,
+    )
     dl = pd.read_csv(RESULTS / "dl_results_master.csv")
-    dl = dl[dl["phase"].eq("Full Test")].copy()
-
-    ens_path = RESULTS / "ensemble_best_comparison.csv"
-    ensemble = pd.read_csv(ens_path) if ens_path.exists() else pd.DataFrame()
-    return fin, ml, dl, ensemble
-
-
-def best_by(df: pd.DataFrame, keys: list[str], metric: str = "QLIKE") -> pd.DataFrame:
-    idx = df.groupby(keys, observed=False)[metric].idxmin()
-    return df.loc[idx].copy()
+    financial = pd.read_csv(RESULTS / "financial_results.csv")
+    ensemble = pd.read_csv(RESULTS / "ensemble_best_comparison.csv")
+    for df in [ml, dl, financial, ensemble]:
+        for col in ["QLIKE", "single_QLIKE", "ensemble_QLIKE", "QLIKE_improvement"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+    return ml, dl, financial, ensemble
 
 
-def pct_improvement(base: float, challenger: float) -> float:
-    if pd.isna(base) or base == 0:
-        return np.nan
-    return (base - challenger) / base * 100
+def best(df: pd.DataFrame, keys: list[str], value: str = "QLIKE") -> pd.DataFrame:
+    return df.loc[df.groupby(keys)[value].idxmin()].reset_index(drop=True)
 
 
-def value_to_color(value: float, lo: float, hi: float, c1=(239, 246, 255), c2=(37, 99, 235)) -> str:
-    if hi <= lo:
-        t = 0.5
-    else:
-        t = max(0, min(1, (value - lo) / (hi - lo)))
-    rgb = tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
-    return "#{:02X}{:02X}{:02X}".format(*rgb)
-
-
-def plot_ml_winner_map(ml: pd.DataFrame) -> Path:
-    c = new_canvas(
-        "ML Winner Map by QLIKE",
-        "Best ML model changes across market regime, country, feature tier, and evaluation protocol.",
-    )
-    d = c.draw
-    best = best_by(ml, ["regime", "country", "feature_set", "protocol"])
-
-    left, top = 170, 190
-    cell_w = 170
-    row_h = 48
-    header_h = 50
-    cols = [(tier, protocol) for tier in TIERS for protocol in PROTOCOLS]
-    rows = [(regime, country) for regime in REGIMES for country in COUNTRIES]
-
-    for j, (tier, protocol) in enumerate(cols):
-        x = left + j * cell_w
-        d.rounded_rectangle((x, top, x + cell_w - 4, top + header_h), radius=8, fill=SOFT, outline=GRID_DARK)
-        text_center(d, (x, top, x + cell_w - 4, top + header_h), f"{tier}\n{protocol}", DARK, F_SMALL)
-
-    for i, (regime, country) in enumerate(rows):
-        y = top + header_h + i * row_h
-        d.text((70, y + 13), f"{regime} / {country}", fill=DARK, font=F_SMALL)
-        for j, (tier, protocol) in enumerate(cols):
-            x = left + j * cell_w
-            rec = best[
-                best["regime"].eq(regime)
-                & best["country"].eq(country)
-                & best["feature_set"].eq(tier)
-                & best["protocol"].eq(protocol)
-            ].iloc[0]
-            model = rec["model"]
-            color = MODEL_COLORS[model]
-            d.rounded_rectangle((x, y, x + cell_w - 4, y + row_h - 5), radius=7, fill=color)
-            text_center(d, (x, y, x + cell_w - 4, y + row_h - 5), str(model), "white", F_SMALL)
-
-    d.text((80, 858), "Each cell selects the lowest QLIKE among Ridge, ElasticNet, Huber, LightGBM, and XGBoost.", fill=MUTED, font=F_SMALL)
-    draw_legend(d, [(m, MODEL_COLORS[m]) for m in ML_MODELS], 170, 910, cols=5)
-    return save(c, "01_ml_winner_map_qlike.png")
-
-
-def plot_feature_tier_ablation(ml: pd.DataFrame) -> Path:
-    c = new_canvas(
-        "Feature Tier Ablation for Best ML",
-        "Adding more features is not uniformly better; the useful information set depends on market condition.",
-    )
-    d = c.draw
-    best = best_by(ml, ["regime", "country", "feature_set", "protocol"])
-
-    chart = (170, 230, 1430, 800)
-    lo, hi = best["QLIKE"].min() * 0.92, best["QLIKE"].max() * 1.05
-    d.line((chart[0], chart[3], chart[2], chart[3]), fill=GRID_DARK, width=2)
-    d.line((chart[0], chart[1], chart[0], chart[3]), fill=GRID_DARK, width=2)
-
-    for k in range(6):
-        val = lo + (hi - lo) * k / 5
-        y = chart[3] - (val - lo) / (hi - lo) * (chart[3] - chart[1])
-        d.line((chart[0], y, chart[2], y), fill=GRID, width=1)
-        d.text((95, y - 12), f"{val:.3f}", fill=MUTED, font=F_TINY)
-
-    tier_colors = {"core": "#2563EB", "momentum": "#059669", "extended": "#7C3AED"}
-    x_centers = np.linspace(chart[0] + 190, chart[2] - 190, len(TIERS))
-    rng = np.random.default_rng(42)
-
-    for x, tier in zip(x_centers, TIERS):
-        vals = best[best["feature_set"].eq(tier)]["QLIKE"].to_numpy()
-        for val in vals:
-            jitter = rng.uniform(-42, 42)
-            y = chart[3] - (val - lo) / (hi - lo) * (chart[3] - chart[1])
-            d.ellipse((x + jitter - 6, y - 6, x + jitter + 6, y + 6), fill=tier_colors[tier], outline="white", width=1)
-        mean = vals.mean()
-        med = np.median(vals)
-        y_mean = chart[3] - (mean - lo) / (hi - lo) * (chart[3] - chart[1])
-        y_med = chart[3] - (med - lo) / (hi - lo) * (chart[3] - chart[1])
-        d.rounded_rectangle((x - 75, y_mean - 11, x + 75, y_mean + 11), radius=8, fill=tier_colors[tier])
-        text_center(d, (int(x - 75), int(y_mean - 13), int(x + 75), int(y_mean + 13)), f"mean {mean:.3f}", "white", F_TINY)
-        d.line((x - 88, y_med, x + 88, y_med), fill=DARK, width=3)
-        text_center(d, (int(x - 105), chart[3] + 24, int(x + 105), chart[3] + 65), tier, DARK, F_H)
-
-    d.text((80, 870), "Dots are best ML QLIKE values for regime-country-protocol cells within each feature tier. Lower is better.", fill=MUTED, font=F_SMALL)
-    return save(c, "02_ml_feature_tier_ablation.png")
-
-
-def plot_ml_vs_financial(fin: pd.DataFrame, ml: pd.DataFrame) -> Path:
-    c = new_canvas(
-        "Best ML Improvement over Financial Baselines",
-        "Best ML models substantially reduce QLIKE relative to the best HAR-RV/GARCH baseline.",
-    )
-    d = c.draw
-    best_fin = best_by(fin, ["regime", "country", "protocol"]).rename(columns={"QLIKE": "financial_QLIKE"})
-    best_ml = best_by(ml, ["regime", "country", "feature_set", "protocol"])
-    best_ml = best_by(best_ml, ["regime", "country", "protocol"]).rename(columns={"QLIKE": "ml_QLIKE"})
-    merged = best_fin[["regime", "country", "protocol", "financial_QLIKE"]].merge(
-        best_ml[["regime", "country", "protocol", "model", "feature_set", "ml_QLIKE"]],
+def fig_01(ml: pd.DataFrame, financial: pd.DataFrame) -> tuple[str, str]:
+    best_ml = best(ml, ["regime", "country", "protocol"])
+    best_fin = best(financial, ["regime", "country", "protocol"])
+    merged = best_ml.merge(
+        best_fin,
         on=["regime", "country", "protocol"],
+        suffixes=("_ml", "_fin"),
     )
-    merged["improvement_pct"] = merged.apply(lambda r: pct_improvement(r["financial_QLIKE"], r["ml_QLIKE"]), axis=1)
-    agg = merged.groupby(["regime", "country"], observed=False)["improvement_pct"].mean().reset_index()
-
-    left, top = 260, 240
-    cell_w, cell_h = 260, 120
-    vals = agg["improvement_pct"].to_numpy()
-    lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
-    for j, country in enumerate(COUNTRIES):
-        text_center(d, (left + j * cell_w, top - 55, left + (j + 1) * cell_w - 10, top - 5), country, DARK, F_H)
-    for i, regime in enumerate(REGIMES):
-        y = top + i * cell_h
-        d.text((90, y + 42), regime, fill=DARK, font=F_H)
-        for j, country in enumerate(COUNTRIES):
-            x = left + j * cell_w
-            val = float(agg[(agg["regime"].eq(regime)) & (agg["country"].eq(country))]["improvement_pct"].iloc[0])
-            fill = value_to_color(val, lo, hi, c1=(236, 253, 245), c2=(5, 150, 105))
-            d.rounded_rectangle((x, y, x + cell_w - 14, y + cell_h - 16), radius=12, fill=fill, outline=GRID_DARK)
-            label = f"{val:.1f}%"
-            color = "white" if val > (lo + hi) / 2 else DARK
-            text_center(d, (x, y + 10, x + cell_w - 14, y + cell_h - 35), label, color, font(34, True))
-            d.text((x + 35, y + cell_h - 38), "QLIKE reduction", fill=MUTED, font=F_TINY)
-
-    d.text((80, 810), "Values are average percentage QLIKE reduction across static and expanding protocols.", fill=MUTED, font=F_SMALL)
-    draw_legend(d, [("lower improvement", "#ECFDF5"), ("higher improvement", "#059669")], 80, 860, cols=2)
-    return save(c, "03_ml_vs_financial_improvement.png")
-
-
-def plot_ml_rank_robustness(ml: pd.DataFrame) -> Path:
-    c = new_canvas(
-        "ML Model Robustness by QLIKE Rank",
-        "Robustness is measured by average rank within identical regime-country-tier-protocol cells.",
+    merged["improvement_pct"] = (merged["QLIKE_fin"] - merged["QLIKE_ml"]) / merged["QLIKE_fin"] * 100
+    y_min, y_max = pct_axis(merged["improvement_pct"])
+    ticks = [30, 40, 50, 60, 70, 80]
+    img, d = canvas(
+        "Financial Baseline vs Best ML",
+        "Each dot is one regime-country-protocol cell; value is QLIKE reduction vs best financial baseline.",
     )
-    d = c.draw
-    ranked = ml.copy()
-    keys = ["regime", "country", "feature_set", "protocol"]
-    ranked["rank"] = ranked.groupby(keys, observed=False)["QLIKE"].rank(method="min", ascending=True)
-    summary = ranked.groupby("model", observed=False)["rank"].agg(["mean", "median"]).reindex(ML_MODELS)
-    win_counts = best_by(ml, keys)["model"].value_counts().reindex(ML_MODELS, fill_value=0)
-
-    chart = (210, 250, 1420, 750)
-    d.line((chart[0], chart[3], chart[2], chart[3]), fill=GRID_DARK, width=2)
-    for r in range(1, 6):
-        y = chart[1] + (r - 1) / 4 * (chart[3] - chart[1])
-        d.line((chart[0], y, chart[2], y), fill=GRID, width=1)
-        d.text((145, y - 12), f"rank {r}", fill=MUTED, font=F_TINY)
-
-    x_centers = np.linspace(chart[0] + 105, chart[2] - 105, len(ML_MODELS))
-    for x, model in zip(x_centers, ML_MODELS):
-        mean_rank = float(summary.loc[model, "mean"])
-        bar_top = chart[1] + (mean_rank - 1) / 4 * (chart[3] - chart[1])
-        color = MODEL_COLORS[model]
-        d.rounded_rectangle((x - 60, bar_top, x + 60, chart[3]), radius=10, fill=color)
-        text_center(d, (int(x - 80), int(bar_top - 44), int(x + 80), int(bar_top - 8)), f"{mean_rank:.2f}", DARK, F_H)
-        text_center(d, (int(x - 100), chart[3] + 20, int(x + 100), chart[3] + 72), model, DARK, F_SMALL)
-        text_center(d, (int(x - 100), chart[3] + 70, int(x + 100), chart[3] + 110), f"{int(win_counts[model])} wins", MUTED, F_TINY)
-
-    d.text((80, 880), "Lower average rank means more stable performance. Win count alone can hide rank consistency.", fill=MUTED, font=F_SMALL)
-    return save(c, "04_ml_model_rank_robustness.png")
+    dot_distribution(d, (190, 185, 1490, 810), merged, "regime", "improvement_pct", REGIMES, y_min, y_max, ticks, BLUE)
+    footer(d, f"n={len(merged)} cells. Positive values mean lower QLIKE than GARCH/HAR-RV.")
+    name = "01_financial_baseline_vs_best_ml.png"
+    save(img, name)
+    return name, "Distribution of QLIKE improvement from best financial baseline to best ML."
 
 
-def plot_best_ml_vs_best_dl(ml: pd.DataFrame, dl: pd.DataFrame) -> Path:
-    c = new_canvas(
-        "Best ML vs. Best Single-DL by Condition",
-        "Single DL complements ML in selected cells, but does not uniformly replace the strongest ML baseline.",
+def fig_02(ml: pd.DataFrame) -> tuple[str, str]:
+    best_ml = best(ml, ["regime", "country", "feature_set", "protocol"])
+    counts = (
+        best_ml.groupby(["regime", "model"]).size().unstack(fill_value=0).reindex(index=REGIMES, columns=ML_MODELS, fill_value=0)
     )
-    d = c.draw
-    keys = ["regime", "country", "feature_set", "protocol"]
-    best_ml = best_by(ml, keys).rename(columns={"QLIKE": "ml_QLIKE", "model": "ml_model"})
-    best_dl = best_by(dl[dl["model"].isin(DL_MODELS)], keys).rename(columns={"QLIKE": "dl_QLIKE", "model": "dl_model"})
-    m = best_ml[keys + ["ml_model", "ml_QLIKE"]].merge(best_dl[keys + ["dl_model", "dl_QLIKE"]], on=keys)
-
-    chart = (210, 230, 1360, 800)
-    vals = np.r_[m["ml_QLIKE"].to_numpy(), m["dl_QLIKE"].to_numpy()]
-    lo, hi = vals.min() * 0.92, vals.max() * 1.05
-
-    d.rectangle(chart, outline=GRID_DARK, width=2)
-    for k in range(6):
-        val = lo + (hi - lo) * k / 5
-        x = chart[0] + (val - lo) / (hi - lo) * (chart[2] - chart[0])
-        y = chart[3] - (val - lo) / (hi - lo) * (chart[3] - chart[1])
-        d.line((x, chart[1], x, chart[3]), fill=GRID, width=1)
-        d.line((chart[0], y, chart[2], y), fill=GRID, width=1)
-        d.text((x - 20, chart[3] + 12), f"{val:.3f}", fill=MUTED, font=F_TINY)
-        d.text((145, y - 12), f"{val:.3f}", fill=MUTED, font=F_TINY)
-
-    d.line((chart[0], chart[3], chart[2], chart[1]), fill="#94A3B8", width=3)
-    d.text((chart[2] - 240, chart[1] + 22), "tie line", fill=MUTED, font=F_TINY)
-
-    for _, row in m.iterrows():
-        x = chart[0] + (row["ml_QLIKE"] - lo) / (hi - lo) * (chart[2] - chart[0])
-        y = chart[3] - (row["dl_QLIKE"] - lo) / (hi - lo) * (chart[3] - chart[1])
-        color = REGIME_COLORS[row["regime"]]
-        d.ellipse((x - 8, y - 8, x + 8, y + 8), fill=color, outline="white", width=2)
-
-    d.text(((chart[0] + chart[2]) // 2 - 120, 845), "Best ML QLIKE", fill=DARK, font=F_H)
-    d.text((45, 505), "Best single-DL QLIKE", fill=DARK, font=F_H)
-    dl_better = int((m["dl_QLIKE"] < m["ml_QLIKE"]).sum())
-    d.text((80, 885), f"Single DL beats best ML in {dl_better}/{len(m)} comparable cells. Lower-left is better.", fill=MUTED, font=F_SMALL)
-    draw_legend(d, [(r, REGIME_COLORS[r]) for r in REGIMES], 1050, 860, cols=2)
-    return save(c, "05_best_ml_vs_best_single_dl.png")
-
-
-def _box_stats(values: np.ndarray) -> tuple[float, float, float, float, float]:
-    return tuple(np.percentile(values, [5, 25, 50, 75, 95]))
-
-
-def plot_model_family_robustness(fin: pd.DataFrame, ml: pd.DataFrame, dl: pd.DataFrame, ensemble: pd.DataFrame) -> Path:
-    c = new_canvas(
-        "Model Family Robustness",
-        "Financial baselines, ML, single-DL, and ensemble serve different roles in the final forecasting framework.",
+    img, d = canvas(
+        "Best ML Model Frequency by Market Regime",
+        "Counts are based on the winning model within each regime-country-feature-protocol cell.",
     )
-    d = c.draw
-
-    data = {
-        "Financial": best_by(fin, ["regime", "country", "protocol"])["QLIKE"].to_numpy(),
-        "ML": best_by(ml, ["regime", "country", "feature_set", "protocol"])["QLIKE"].to_numpy(),
-        "Single DL": best_by(dl[dl["model"].isin(DL_MODELS)], ["regime", "country", "feature_set", "protocol"])["QLIKE"].to_numpy(),
-    }
-    if not ensemble.empty:
-        data["Ensemble"] = ensemble["ensemble_QLIKE"].to_numpy()
-
-    chart = (210, 240, 1400, 770)
-    vals = np.concatenate(list(data.values()))
-    lo, hi = np.nanmin(vals) * 0.9, np.nanmax(vals) * 1.08
-    d.line((chart[0], chart[3], chart[2], chart[3]), fill=GRID_DARK, width=2)
-    d.line((chart[0], chart[1], chart[0], chart[3]), fill=GRID_DARK, width=2)
-
-    for k in range(6):
-        val = lo + (hi - lo) * k / 5
-        y = chart[3] - (val - lo) / (hi - lo) * (chart[3] - chart[1])
-        d.line((chart[0], y, chart[2], y), fill=GRID, width=1)
-        d.text((135, y - 12), f"{val:.3f}", fill=MUTED, font=F_TINY)
-
-    x_centers = np.linspace(chart[0] + 150, chart[2] - 150, len(data))
-    for x, (name, values) in zip(x_centers, data.items()):
-        p5, q1, med, q3, p95 = _box_stats(values)
-        def y_of(v: float) -> float:
-            return chart[3] - (v - lo) / (hi - lo) * (chart[3] - chart[1])
-
-        color = MODEL_COLORS[name]
-        y5, y1, ym, y3, y95 = map(y_of, [p5, q1, med, q3, p95])
-        d.line((x, y5, x, y95), fill=color, width=4)
-        d.line((x - 45, y5, x + 45, y5), fill=color, width=3)
-        d.line((x - 45, y95, x + 45, y95), fill=color, width=3)
-        d.rounded_rectangle((x - 75, y3, x + 75, y1), radius=8, fill="#FFFFFF", outline=color, width=4)
-        d.line((x - 75, ym, x + 75, ym), fill=color, width=5)
-        text_center(d, (int(x - 105), chart[3] + 24, int(x + 105), chart[3] + 70), name, DARK, F_H)
-        text_center(d, (int(x - 105), chart[3] + 70, int(x + 105), chart[3] + 106), f"median {med:.3f}", MUTED, F_TINY)
-
-    d.text((80, 880), "Boxes show 25th-75th percentile, line is median, whiskers show 5th-95th percentile. Lower QLIKE is better.", fill=MUTED, font=F_SMALL)
-    return save(c, "06_model_family_robustness.png")
+    heatmap_counts(d, (300, 230, 1450, 770), counts, base="blue")
+    footer(d, f"n={len(best_ml)} cells. Darker cells indicate more frequent model wins.")
+    name = "02_ml_winner_frequency_heatmap.png"
+    save(img, name)
+    return name, "Heatmap showing which ML model wins most often in each market regime."
 
 
-def write_manifest(paths: list[Path]) -> None:
-    descriptions = {
-        "01_ml_winner_map_qlike.png": "Best ML model by QLIKE for each regime-country-feature-protocol condition.",
-        "02_ml_feature_tier_ablation.png": "Best ML QLIKE distribution across core, momentum, and extended feature tiers.",
-        "03_ml_vs_financial_improvement.png": "Average percentage QLIKE reduction of best ML over best financial baseline.",
-        "04_ml_model_rank_robustness.png": "Average QLIKE rank and winner counts for ML models.",
-        "05_best_ml_vs_best_single_dl.png": "Comparable-cell scatter of best ML QLIKE against best single-DL QLIKE.",
-        "06_model_family_robustness.png": "QLIKE distribution by model family: financial, ML, single-DL, ensemble.",
-    }
-    rows = [
-        {
-            "figure": p.name,
-            "path": p.relative_to(ROOT).as_posix(),
-            "report_use": descriptions[p.name],
-        }
-        for p in paths
-    ]
-    pd.DataFrame(rows).to_csv(OUT / "figure_manifest.csv", index=False, encoding="utf-8-sig")
+def fig_03(ml: pd.DataFrame) -> tuple[str, str]:
+    tier_best = best(ml, ["regime", "country", "protocol", "feature_set"])
+    pivot = tier_best.pivot_table(index=["regime", "country", "protocol"], columns="feature_set", values="QLIKE")
+    rows = pivot.reset_index()
+    rows["momentum_vs_core"] = (rows["core"] - rows["momentum"]) / rows["core"] * 100
+    rows["extended_vs_core"] = (rows["core"] - rows["extended"]) / rows["core"] * 100
+    means = rows.groupby("regime")[["momentum_vs_core", "extended_vs_core"]].mean().reindex(REGIMES)
+    y_min, y_max = pct_axis(pd.concat([means["momentum_vs_core"], means["extended_vs_core"]]), symmetric=True)
+    ticks = [-20, -10, 0, 10, 20, 30, 40]
+    img, d = canvas(
+        "Feature Expansion Gain Relative to Core Features",
+        "Bars show average QLIKE reduction by regime; positive means the feature tier improves on core.",
+    )
+    grouped_bar_chart(
+        d,
+        (180, 190, 1480, 800),
+        means,
+        REGIMES,
+        ["momentum_vs_core", "extended_vs_core"],
+        {"momentum_vs_core": TEAL, "extended_vs_core": ORANGE},
+        y_min,
+        y_max,
+        ticks,
+        suffix="%",
+        zero_line=True,
+    )
+    footer(d, "Computed from best model within each feature tier for every regime-country-protocol cell.")
+    name = "03_feature_tier_gain_vs_core.png"
+    save(img, name)
+    return name, "Grouped bars showing feature-tier gains over the core feature set."
+
+
+def fig_04(ml: pd.DataFrame) -> tuple[str, str]:
+    cell_best = best(ml, ["regime", "country", "feature_set", "protocol"])
+    pivot = cell_best.pivot_table(index=["regime", "country", "feature_set"], columns="protocol", values="QLIKE").reset_index()
+    pivot["expanding_gain_pct"] = (pivot["static"] - pivot["expanding"]) / pivot["static"] * 100
+    y_min, y_max = pct_axis(pivot["expanding_gain_pct"], symmetric=True)
+    ticks = [-30, -20, -10, 0, 10, 20, 30]
+    img, d = canvas(
+        "Expanding-Window Training Gain",
+        "Each dot compares best expanding-window ML against best static ML for the same regime-country-feature cell.",
+    )
+    dot_distribution(d, (190, 185, 1490, 810), pivot, "regime", "expanding_gain_pct", REGIMES, y_min, y_max, ticks, GREEN, zero_line=True)
+    footer(d, f"n={len(pivot)} cells. Positive values mean expanding-window training lowers QLIKE.")
+    name = "04_expanding_window_gain_distribution.png"
+    save(img, name)
+    return name, "Dot distribution of expanding-window gain over static ML."
+
+
+def fig_05(ml: pd.DataFrame, dl: pd.DataFrame) -> tuple[str, str]:
+    best_ml = best(ml, ["regime", "country", "feature_set", "protocol"])
+    best_dl = best(dl, ["regime", "country", "feature_set", "protocol"])
+    merged = best_ml.merge(
+        best_dl,
+        on=["regime", "country", "feature_set", "protocol"],
+        suffixes=("_ml", "_dl"),
+    )
+    merged["dl_gain_pct"] = (merged["QLIKE_ml"] - merged["QLIKE_dl"]) / merged["QLIKE_ml"] * 100
+    summary = (
+        merged.assign(dl_win=merged["dl_gain_pct"] > 0)
+        .groupby("regime")
+        .agg(dl_win_rate=("dl_win", "mean"), mean_gain=("dl_gain_pct", "mean"), wins=("dl_win", "sum"), cells=("dl_win", "size"))
+        .reindex(REGIMES)
+    )
+    summary["dl_win_rate"] = summary["dl_win_rate"] * 100
+    img, d = canvas(
+        "Best Single DL Win Rate against Best ML",
+        "Bars show the share of matched cells where a single DL model lowers QLIKE relative to best ML.",
+    )
+    grouped_bar_chart(
+        d,
+        (180, 190, 1480, 800),
+        summary[["dl_win_rate"]],
+        REGIMES,
+        ["dl_win_rate"],
+        {"dl_win_rate": PURPLE},
+        0,
+        100,
+        [0, 20, 40, 60, 80, 100],
+        suffix="%",
+    )
+    x0, y0, x1, y1 = (180, 190, 1480, 800)
+    group_w = (x1 - x0) / len(REGIMES)
+    for gi, regime in enumerate(REGIMES):
+        row = summary.loc[regime]
+        center = x0 + group_w * (gi + 0.5)
+        label = f"{int(row['wins'])}/{int(row['cells'])} cells, mean gain {row['mean_gain']:.1f}%"
+        tw, th = text_size(d, label, F_SMALL)
+        d.text((center - tw / 2, 845), label, fill=MUTED, font=F_SMALL)
+    wins = int((merged["dl_gain_pct"] > 0).sum())
+    footer(d, f"DL improves {wins}/{len(merged)} cells overall. Mean gain is negative when DL's average QLIKE is higher than ML.")
+    name = "05_best_single_dl_vs_best_ml.png"
+    save(img, name)
+    return name, "Bar chart showing where best single DL beats best ML at the matched-cell level."
+
+
+def fig_06(ensemble: pd.DataFrame) -> tuple[str, str]:
+    ensemble = ensemble.copy()
+    ensemble["ensemble_gain_pct"] = ensemble["QLIKE_improvement"] / ensemble["single_QLIKE"] * 100
+    means = ensemble.groupby("regime")["ensemble_gain_pct"].mean().reindex(REGIMES).to_frame("ensemble_gain_pct")
+    y_min = 0
+    y_max = max(float(means["ensemble_gain_pct"].max()) * 1.35, 20)
+    ticks = [0, 5, 10, 15, 20]
+    img, d = canvas(
+        "Ensemble Gain over Best Single DL",
+        "Bars show average QLIKE reduction; labels show cell-level ensemble win rate.",
+    )
+    grouped_bar_chart(
+        d,
+        (180, 190, 1480, 800),
+        means,
+        REGIMES,
+        ["ensemble_gain_pct"],
+        {"ensemble_gain_pct": BLUE},
+        y_min,
+        y_max,
+        ticks,
+        suffix="%",
+    )
+    x0, y0, x1, y1 = (180, 190, 1480, 800)
+    group_w = (x1 - x0) / len(REGIMES)
+    for gi, regime in enumerate(REGIMES):
+        sub = ensemble[ensemble["regime"] == regime]
+        win_rate = sub["ensemble_better_QLIKE"].astype(str).str.lower().eq("true").mean() * 100
+        label = f"win rate {win_rate:.0f}%"
+        tw, th = text_size(d, label, F_SMALL)
+        d.text((x0 + group_w * (gi + 0.5) - tw / 2, 845), label, fill=MUTED, font=F_SMALL)
+    footer(d, f"n={len(ensemble)} cells. Ensemble comparison is against the best single DL model, not against ML.")
+    name = "06_ensemble_gain_over_single_dl.png"
+    save(img, name)
+    return name, "Bar chart of ensemble QLIKE gain over best single DL."
+
+
+def write_manifest(items: list[tuple[str, str]]) -> None:
+    pd.DataFrame(items, columns=["figure", "description"]).to_csv(OUT / "figure_manifest.csv", index=False)
 
 
 def main() -> None:
-    fin, ml, dl, ensemble = load_data()
-    paths = [
-        plot_ml_winner_map(ml),
-        plot_feature_tier_ablation(ml),
-        plot_ml_vs_financial(fin, ml),
-        plot_ml_rank_robustness(ml),
-        plot_best_ml_vs_best_dl(ml, dl),
-        plot_model_family_robustness(fin, ml, dl, ensemble),
+    OUT.mkdir(parents=True, exist_ok=True)
+    for path in OUT.iterdir():
+        if path.is_file():
+            path.unlink()
+
+    ml, dl, financial, ensemble = load_data()
+    items = [
+        fig_01(ml, financial),
+        fig_02(ml),
+        fig_03(ml),
+        fig_04(ml),
+        fig_05(ml, dl),
+        fig_06(ensemble),
     ]
-    write_manifest(paths)
-    print("Generated figures:")
-    for p in paths:
-        print(" -", p.relative_to(ROOT).as_posix())
-    print(" -", (OUT / "figure_manifest.csv").relative_to(ROOT).as_posix())
+    write_manifest(items)
 
 
 if __name__ == "__main__":
