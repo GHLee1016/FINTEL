@@ -1,0 +1,7 @@
+﻿figure,path,report_use
+01_ml_winner_map_qlike.png,results/figures/ml_final/01_ml_winner_map_qlike.png,Best ML model by QLIKE for each regime-country-feature-protocol condition.
+02_ml_feature_tier_ablation.png,results/figures/ml_final/02_ml_feature_tier_ablation.png,"Best ML QLIKE distribution across core, momentum, and extended feature tiers."
+03_ml_vs_financial_improvement.png,results/figures/ml_final/03_ml_vs_financial_improvement.png,Average percentage QLIKE reduction of best ML over best financial baseline.
+04_ml_model_rank_robustness.png,results/figures/ml_final/04_ml_model_rank_robustness.png,Average QLIKE rank and winner counts for ML models.
+05_best_ml_vs_best_single_dl.png,results/figures/ml_final/05_best_ml_vs_best_single_dl.png,Comparable-cell scatter of best ML QLIKE against best single-DL QLIKE.
+06_model_family_robustness.png,results/figures/ml_final/06_model_family_robustness.png,"QLIKE distribution by model family: financial, ML, single-DL, ensemble."
