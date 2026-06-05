@@ -1,7 +1,7 @@
 figure,description
-01_financial_baseline_vs_best_ml.png,Distribution of QLIKE improvement from best financial baseline to best ML.
-02_ml_winner_frequency_heatmap.png,Heatmap showing which ML model wins most often in each market regime.
-03_feature_tier_gain_vs_core.png,Grouped bars showing feature-tier gains over the core feature set.
-04_expanding_window_gain_distribution.png,Dot distribution of expanding-window gain over static ML.
-05_best_single_dl_vs_best_ml.png,Bar chart showing where best single DL beats best ML at the matched-cell level.
-06_ensemble_gain_over_single_dl.png,Bar chart of ensemble QLIKE gain over best single DL.
+01_baseline_vs_ml_grouped_bar.png,Grouped bars comparing average QLIKE of best financial baseline and best ML by regime.
+02_ml_winner_regime_heatmap.png,Heatmap of winning ML model frequency by regime.
+03_feature_tier_winner_heatmap.png,Heatmap showing how often each feature tier is the best option by regime.
+04_static_vs_expanding_summary.png,Summary bar chart of expanding-window win rate and mean QLIKE gain against static training.
+05_ml_vs_dl_win_loss_heatmap.png,Win/loss heatmap comparing best single DL against best ML by regime and country.
+06_single_dl_vs_ensemble_grouped_bar.png,Grouped bars comparing best single DL and DL ensemble average QLIKE by regime.
